@@ -1,0 +1,30 @@
+[package]
+name = "deepvault-vault"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The .dvault format v1: Argon2id key slots, HKDF subkeys, XChaCha20-Poly1305 entries. Bytes in, bytes out."
+
+[lib]
+name = "vault"
+
+[features]
+# Deterministic randomness and clock, and KDF parameters below the production minimum.
+# For test vectors only: never enabled by core-ffi (and so never in the app).
+testing = []
+
+[dependencies]
+argon2.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+ciborium.workspace = true
+
+[dev-dependencies]
+deepvault-vault = { path = ".", features = ["testing"] }
+serde_json.workspace = true

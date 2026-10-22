@@ -1,0 +1,52 @@
+{
+  "description": "DeepVault .dvault format v1: one vault, one password slot, one login entry. Randomness is drawn in this order: vault_id, kdf.salt, vault_key, slot_nonce, entry_id, entry_nonce. AAD = \"DVLT\" || u16le(1) || purpose || 0x00 || vault_id || extra (slot: kind label; entry: entry_id). Subkeys = HKDF-SHA256(salt = vault_id, ikm = vault_key, info = \"deepvault/v1/<purpose>\").",
+  "expected": {
+    "entries_key": "0803683aaf2a7c3200e520c7732075bebc628706f020a60deb220033b8688fcf",
+    "entry_ciphertext": "1d79d78918d9cd946706a8d01bb5cfc789f1e55fd2844ee55bbcc41d0b905e8ee5500b2406441841da63d0292a87d9df862c373ea32a30697be3a8ab072172452412d4bdd9f0ac0602423bb6bda58214b399b33a6b74b6251fc699a7cf82825d3c7836d8a5f1cbfa77b9b712c85043d0f500c6ccf3ae514f9365e09c710f1395e320845e5025a4f8ca5ad054d2edfb9e5714b70b3c46a666b956a714c6a05b999ff468fecf755d0f71442f23c6905c41ee9630f989f32930a7e2465b6cc1b14f6098fdd3ef61c034a7f04c766a99af1bfa3df6fb9b94e03590443d5e6fc8264521d2ddb5c10f4c9616ee3fc52d0043b573a0d7ef2103",
+    "entry_plaintext": "a6646b696e64656c6f67696e657469746c65674578616d706c65666669656c647383a3646e616d656375726c6576616c7565581968747470733a2f2f6578616d706c652e636f6d2f6c6f67696e69636f6e6365616c6564f4a3646e616d6568757365726e616d656576616c756551616c696365406578616d706c652e636f6d69636f6e6365616c6564f4a3646e616d656870617373776f72646576616c75655268756e746572322d6275742d6c6f6e67657269636f6e6365616c6564f56a637265617465645f61741a6ad800806a757064617465645f61741a6ad800806764656c65746564f4",
+    "file_len": 581,
+    "file_mac_key": "68cdddf1282a7f36be47df2e7507b32699df3101e379c23edeac298e96d6748d",
+    "header_mac_key": "a925aa60d6de3b664bf517700c1f008f7d2b7cac9007827371e59e1037475661",
+    "kek": "9aeef75313e585f492c33c5e12d82e9ad253b7dd78632d537e899cd4eddd789c",
+    "wrapped_vault_key": "734fcf5ed1877e351ae238061dbbf4c23d9e625e932763fdb55412cb1732b07df5cc336570abc26e5c5b969c70ddecaa"
+  },
+  "format_version": 1,
+  "input": {
+    "entry": {
+      "fields": [
+        {
+          "concealed": false,
+          "name": "url",
+          "value": "https://example.com/login"
+        },
+        {
+          "concealed": false,
+          "name": "username",
+          "value": "alice@example.com"
+        },
+        {
+          "concealed": true,
+          "name": "password",
+          "value": "hunter2-but-longer"
+        }
+      ],
+      "kind": "login",
+      "title": "Example"
+    },
+    "entry_id": "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "entry_nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+    "kdf": {
+      "alg": "argon2id",
+      "m_kib": 8192,
+      "p": 1,
+      "salt": "000102030405060708090a0b0c0d0e0f",
+      "t": 1
+    },
+    "now": 1792540800,
+    "password": "correct horse battery staple",
+    "slot_nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+    "vault_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "vault_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+  },
+  "test_only": true
+}

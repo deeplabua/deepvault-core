@@ -1,0 +1,242 @@
+//! A vault's life — create, add, save, open, delete — and every way a file can be wrong.
+//! Parameters are `TEST_ONLY`; nothing here is a real secret.
+
+use vault::testing::ScriptedEntropy;
+use vault::{field, EntryKind, Field, KdfParams, NewEntry, Vault, VaultError};
+
+const PASSWORD: &[u8] = b"correct horse battery staple";
+const PARAMS: KdfParams = KdfParams::TEST_ONLY;
+
+fn login(title: &str, password: &str) -> NewEntry {
+    NewEntry {
+        kind: EntryKind::Login,
+        title: title.into(),
+        fields: vec![
+            Field { name: field::URL.into(), value: b"https://example.com".to_vec(), concealed: false },
+            Field { name: field::USERNAME.into(), value: b"alice".to_vec(), concealed: false },
+            Field { name: field::PASSWORD.into(), value: password.as_bytes().to_vec(), concealed: true },
+        ],
+    }
+}
+
+/// A saved vault with one login.
+fn sample() -> Vec<u8> {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    vault.add_entry(login("Example", "s3cret"));
+    vault.to_bytes()
+}
+
+/// Where the parts of a v1 file are: (header, header_mac, blocks, file_mac) as ranges.
+fn layout(file: &[u8]) -> [std::ops::Range<usize>; 4] {
+    let header_len = u32::from_le_bytes(file[6..10].try_into().unwrap()) as usize;
+    let header = 10..10 + header_len;
+    let header_mac = header.end..header.end + 32;
+    let blocks = header_mac.end..file.len() - 32;
+    [header, header_mac, blocks, file.len() - 32..file.len()]
+}
+
+fn open(file: &[u8]) -> Result<Vault, VaultError> {
+    Vault::open(file, PASSWORD)
+}
+
+// MARK: - Life
+
+#[test]
+fn entries_survive_saving_and_opening() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let first = vault.add_entry(login("First", "one"));
+    let second = vault.add_entry(login("Second", "two"));
+    assert_ne!(first, second);
+
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let titles: Vec<_> = reopened.entries().iter().map(|e| e.title.as_str()).collect();
+    assert_eq!(titles, ["First", "Second"]);
+    assert_eq!(reopened.entries()[0].url.as_deref(), Some("https://example.com"));
+    assert_eq!(reopened.entries()[0].username.as_deref(), Some("alice"));
+    assert_eq!(reopened.secret(&second, field::PASSWORD).unwrap().expose(), b"two");
+    assert_eq!(reopened.vault_id(), vault.vault_id());
+}
+
+#[test]
+fn concealed_fields_stay_out_of_the_index() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let id = vault.add_entry(NewEntry {
+        kind: EntryKind::Login,
+        title: "Hidden".into(),
+        fields: vec![Field { name: field::USERNAME.into(), value: b"bob".to_vec(), concealed: true }],
+    });
+    assert_eq!(vault.entries()[0].username, None);
+    assert_eq!(vault.secret(&id, field::USERNAME).unwrap().expose(), b"bob");
+    assert_eq!(vault.secret(&id, field::NOTES).err(), Some(VaultError::NotFound));
+}
+
+#[test]
+fn a_deleted_entry_leaves_a_tombstone() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let gone = vault.add_entry(login("Gone", "x"));
+    vault.add_entry(login("Kept", "y"));
+    let before = vault.to_bytes();
+    vault.delete_entry(&gone).unwrap();
+    assert_eq!(vault.secret(&gone, field::PASSWORD).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.delete_entry(&gone), Err(VaultError::NotFound));
+
+    let after = vault.to_bytes();
+    let reopened = open(&after).unwrap();
+    assert_eq!(reopened.entries().len(), 1);
+    assert_eq!(reopened.entries()[0].title, "Kept");
+    // Still two blocks: the tombstone keeps its place for a merge.
+    assert_eq!(after[layout(&after)[2].start..][..4], before[layout(&before)[2].start..][..4]);
+}
+
+#[test]
+fn nothing_is_written_in_the_clear() {
+    let file = sample();
+    let contains = |needle: &[u8]| file.windows(needle.len()).any(|window| window == needle);
+    assert!(!contains(b"s3cret"));
+    assert!(!contains(b"Example"));
+    assert!(!contains(b"example.com"));
+    assert!(!contains(b"alice"));
+    assert!(!contains(PASSWORD));
+}
+
+#[test]
+fn every_save_is_a_complete_file() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let empty = vault.to_bytes();
+    assert_eq!(open(&empty).unwrap().entries().len(), 0);
+    vault.add_entry(login("One", "1"));
+    assert_eq!(open(&vault.to_bytes()).unwrap().entries().len(), 1);
+}
+
+// MARK: - Keys
+
+#[test]
+fn a_wrong_password_is_refused() {
+    let file = sample();
+    assert_eq!(Vault::open(&file, b"correct horse battery stapler").err(), Some(VaultError::WrongPassword));
+    assert_eq!(Vault::open(&file, b"").err(), Some(VaultError::WrongPassword));
+}
+
+#[test]
+fn a_device_slot_opens_its_own_vault_only() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    vault.add_entry(login("Example", "s3cret"));
+    let kek = [0x42; 32];
+    let slot = vault.device_slot(&kek).unwrap();
+    let file = vault.to_bytes();
+
+    let opened = Vault::open_with_device_key(&file, &slot, &kek).unwrap();
+    assert_eq!(opened.entries().len(), 1);
+    assert_eq!(Vault::open_with_device_key(&file, &slot, &[0x43; 32]).err(), Some(VaultError::WrongPassword));
+
+    let mut other = Vault::create(PASSWORD, PARAMS).unwrap();
+    let other_slot = other.device_slot(&kek).unwrap();
+    assert_eq!(Vault::open_with_device_key(&file, &other_slot, &kek).err(), Some(VaultError::WrongPassword));
+
+    assert_eq!(Vault::open_with_device_key(&file, &slot, &[0x42; 31]).err(), Some(VaultError::InvalidKey));
+    assert_eq!(Vault::open_with_device_key(&file, &slot[1..], &kek).err(), Some(VaultError::InvalidKey));
+    assert_eq!(vault.device_slot(&[1; 16]).err(), Some(VaultError::InvalidKey));
+}
+
+#[test]
+fn weak_kdf_parameters_are_refused() {
+    let weak = KdfParams { m_kib: 1024, t: 1, p: 1 };
+    assert_eq!(Vault::create(PASSWORD, weak).err(), Some(VaultError::InvalidKdfParams));
+}
+
+// MARK: - Damaged files
+
+#[test]
+fn a_changed_header_never_opens() {
+    let file = sample();
+    let [header, ..] = layout(&file);
+    for index in header {
+        let mut changed = file.clone();
+        changed[index] ^= 0x01;
+        // A changed salt, cost or slot gives a key that opens nothing; anything else fails
+        // the header MAC or the CBOR.
+        let result = open(&changed).err();
+        assert!(
+            matches!(result, Some(VaultError::WrongPassword | VaultError::Corrupted)),
+            "byte {index}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn changed_macs_and_blocks_are_detected() {
+    let file = sample();
+    let [_, header_mac, blocks, file_mac] = layout(&file);
+    // Every byte of a block: id, nonce, length and ciphertext.
+    for index in header_mac.chain(blocks).chain(file_mac) {
+        let mut changed = file.clone();
+        changed[index] ^= 0x80;
+        assert_eq!(open(&changed).err(), Some(VaultError::Corrupted), "byte {index}");
+    }
+}
+
+#[test]
+fn a_truncated_or_extended_file_is_corrupted() {
+    let file = sample();
+    for len in 0..file.len() {
+        assert_eq!(open(&file[..len]).err(), Some(VaultError::Corrupted), "length {len}");
+    }
+    let mut longer = file.clone();
+    longer.push(0);
+    assert_eq!(open(&longer).err(), Some(VaultError::Corrupted));
+}
+
+#[test]
+fn an_unknown_version_or_magic_is_named() {
+    let file = sample();
+    let mut newer = file.clone();
+    newer[4..6].copy_from_slice(&2u16.to_le_bytes());
+    assert_eq!(open(&newer).err(), Some(VaultError::UnsupportedVersion(2)));
+
+    let mut not_a_vault = file.clone();
+    not_a_vault[..4].copy_from_slice(b"PK\x03\x04");
+    assert_eq!(open(&not_a_vault).err(), Some(VaultError::Corrupted));
+    assert_eq!(open(b"").err(), Some(VaultError::Corrupted));
+}
+
+#[test]
+fn a_block_from_another_vault_is_refused() {
+    // Same password, same entry layout — but a different vault id and key.
+    let ours = sample();
+    let theirs = sample();
+    let [_, _, our_blocks, _] = layout(&ours);
+    let [_, _, their_blocks, _] = layout(&theirs);
+    let mut mixed = ours[..our_blocks.start].to_vec();
+    mixed.extend_from_slice(&theirs[their_blocks.clone()]);
+    mixed.extend_from_slice(&ours[ours.len() - 32..]);
+    assert_eq!(open(&mixed).err(), Some(VaultError::Corrupted));
+}
+
+#[test]
+fn scripted_entropy_is_used_in_order() {
+    let chunks = vec![vec![1; 16], vec![2; 16], vec![3; 32], vec![4; 24], vec![5; 16], vec![6; 24]];
+    let entropy = ScriptedEntropy::new(chunks, 7);
+    let mut vault = Vault::create_with(Box::new(entropy), PASSWORD, PARAMS).unwrap();
+    assert_eq!(vault.vault_id(), [1; 16]);
+    assert_eq!(vault.add_entry(login("x", "y")), [5; 16]);
+    assert_eq!(vault.entries()[0].updated_at, 7);
+}
+
+#[test]
+fn a_header_that_claims_huge_lengths_is_refused_cheaply() {
+    // CBOR map { "vault_id": bytes(2^64 − 1) } and an array of 2^32 − 1 items: lengths the
+    // parser must not trust for allocation.
+    for header in [&b"\xa1\x68vault_id\x5b\xff\xff\xff\xff\xff\xff\xff\xff"[..], b"\x9a\xff\xff\xff\xff"] {
+        let mut file = b"DVLT\x01\x00".to_vec();
+        file.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        file.extend_from_slice(header);
+        file.extend_from_slice(&[0; 32 + 4 + 32]);
+        assert_eq!(open(&file).err(), Some(VaultError::Corrupted));
+    }
+    // A block count far beyond what the file holds.
+    let file = sample();
+    let [_, header_mac, ..] = layout(&file);
+    let mut many = file.clone();
+    many[header_mac.end..header_mac.end + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(open(&many).err(), Some(VaultError::Corrupted));
+}

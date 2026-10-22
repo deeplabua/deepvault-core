@@ -1,0 +1,32 @@
+# DeepVault's open core: the `.dvault` file format, the key hierarchy (Argon2id, HKDF,
+# XChaCha20-Poly1305) and the entries. The app pulls `deepvault-vault` in as a git
+# dependency pinned to a release tag and exports it to Swift itself (UniFFI lives there).
+#
+# No network and no file system: the core takes and returns bytes. Every dependency is
+# listed in ADR-0001 (docs/architecture/adr in the app repo); a new one needs an ADR.
+[workspace]
+members = ["crates/vault"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+hkdf = "0.13"
+hmac = "0.13"
+sha2 = { version = "0.11", default-features = false }
+zeroize = { version = "1.9", features = ["derive"] }
+getrandom = "0.4"
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+ciborium = "0.2"
+serde_json = "1"
+
+# Argon2 in a debug build is ~50× slower; tests and debug app builds keep it usable.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

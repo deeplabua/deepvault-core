@@ -1,0 +1,5 @@
+# Pinned for reproducible builds of the static library (PRD 03, «Сборка и релиз»).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
