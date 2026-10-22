@@ -19,6 +19,8 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 hkdf = "0.13"
 hmac = "0.13"
 sha2 = { version = "0.11", default-features = false }
+# TOTP only (RFC 6238 defaults to HMAC-SHA1); never for the vault's own keys.
+sha1 = { version = "0.11", default-features = false }
 zeroize = { version = "1.9", features = ["derive"] }
 getrandom = "0.4"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }

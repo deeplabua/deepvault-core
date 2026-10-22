@@ -27,6 +27,17 @@ entry ─CBOR─► XChaCha20-Poly1305(K_entries, random 24-byte nonce,
 
 The file layout is documented in [`crates/vault/src/format.rs`](crates/vault/src/format.rs).
 
+## Entries
+
+An entry is a kind (`login`, `note`, `card`), a title and an ordered list of named fields, each
+visible or concealed. Names the app uses: `username`, `password`, `totp`, `url`, `notes`, `tag`,
+`icon` (`crates/vault/src/entry.rs`); a name may repeat (several sites, notes, tags). The index kept
+in memory while unlocked holds only visible values: title, first site and user name, tags, the
+picture, whether there is a one-time code. Concealed values are decrypted one field at a time.
+
+One-time codes (RFC 6238, `crates/vault/src/totp.rs`) are computed in the core from an
+`otpauth://totp/…` link or a base32 setup key: the app gets the code, never the secret.
+
 ## Layout
 
 | Path | What |
@@ -47,14 +58,15 @@ python3 tests/vectors/check_v1.py tests/vectors/v1_sample.json tests/fixtures/v1
 
 ## Dependencies
 
-RustCrypto `argon2`, `chacha20poly1305`, `hkdf`, `hmac`, `sha2`; `zeroize`, `getrandom`,
-`serde` + `ciborium`. Each is justified in ADR-0001; a new one needs an ADR.
+RustCrypto `argon2`, `chacha20poly1305`, `hkdf`, `hmac`, `sha2`, `sha1` (one-time codes only:
+RFC 6238 defaults to HMAC-SHA1); `zeroize`, `getrandom`, `serde` + `ciborium`. Each is justified
+in ADR-0001; a new one needs an ADR.
 
 ## Using it
 
 ```toml
 [dependencies]
-deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.1.0" }
+deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.2.0" }
 ```
 
 ## License

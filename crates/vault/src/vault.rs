@@ -3,7 +3,7 @@
 
 use crate::aead::{self, NONCE_LEN};
 use crate::entropy::{Entropy, SystemEntropy};
-use crate::entry::{Entry, EntrySummary, NewEntry};
+use crate::entry::{Entry, EntrySummary, FieldSummary, NewEntry};
 use crate::error::{Result, VaultError};
 use crate::format::{self, Block, Header, KdfHeader, SlotHeader, ENTRY_ID_LEN};
 use crate::kdf::{self, KdfParams, SALT_LEN};
@@ -182,13 +182,50 @@ impl Vault {
         Ok(())
     }
 
+    /// Replaces a live entry's kind, title and fields. Its id, place and creation date stay;
+    /// it is sealed again under a fresh nonce. Randomness: nonce (24).
+    pub fn update_entry(&mut self, id: &[u8; ENTRY_ID_LEN], new: NewEntry) -> Result<()> {
+        let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(id)?;
+        let old =
+            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let entry = Entry {
+            kind: new.kind,
+            title: new.title,
+            fields: new.fields,
+            created_at: old.created_at,
+            updated_at: self.entropy.now().max(old.updated_at),
+            deleted: false,
+        };
+        self.index[position] = EntrySummary::new(*id, &entry);
+        self.blocks[block] = self.seal(*id, &entry);
+        Ok(())
+    }
+
+    /// The fields of a live entry, in order, without concealed values.
+    pub fn fields(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<Vec<FieldSummary>> {
+        let entry = self.live(id)?;
+        Ok(entry.fields.iter().map(FieldSummary::new).collect())
+    }
+
+    /// The field at `index` (as `fields` lists them) of a live entry, decrypted for this call
+    /// only. For entries with several fields of one name (sites, notes).
+    pub fn secret_at(&self, id: &[u8; ENTRY_ID_LEN], index: usize) -> Result<SecretBytes> {
+        let entry = self.live(id)?;
+        let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
+        Ok(SecretBytes::new(field.value.clone()))
+    }
+
+    /// The one-time code of the TOTP field at `index` at `unix_time`. The secret stays here.
+    pub fn totp(&self, id: &[u8; ENTRY_ID_LEN], index: usize, unix_time: u64) -> Result<crate::TotpCode> {
+        let entry = self.live(id)?;
+        let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
+        crate::totp::code(&field.value, unix_time)
+    }
+
     /// One field of a live entry, decrypted for this call only.
     pub fn secret(&self, id: &[u8; ENTRY_ID_LEN], field: &str) -> Result<SecretBytes> {
-        if !self.index.iter().any(|summary| &summary.id == id) {
-            return Err(VaultError::NotFound);
-        }
-        let block = &self.blocks[self.block_index(id)?];
-        let entry = decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)?;
+        let entry = self.live(id)?;
         let field = entry.field(field).ok_or(VaultError::NotFound)?;
         Ok(SecretBytes::new(field.value.clone()))
     }
@@ -199,6 +236,15 @@ impl Vault {
 
     pub fn kdf_params(&self) -> KdfParams {
         KdfParams { m_kib: self.header.kdf.m_kib, t: self.header.kdf.t, p: self.header.kdf.p }
+    }
+
+    /// A live entry, decrypted; dropped (and zeroed) by the caller.
+    fn live(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<Entry> {
+        if !self.index.iter().any(|summary| &summary.id == id) {
+            return Err(VaultError::NotFound);
+        }
+        let block = &self.blocks[self.block_index(id)?];
+        decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)
     }
 
     fn block_index(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<usize> {

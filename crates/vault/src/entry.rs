@@ -16,6 +16,12 @@ pub mod field {
     pub const NUMBER: &str = "number";
     pub const EXPIRY: &str = "expiry";
     pub const CVV: &str = "cvv";
+    /// A TOTP secret: `otpauth://totp/…` or base32 (concealed).
+    pub const TOTP: &str = "totp";
+    /// The entry's picture, a small PNG the user chose (not concealed: it is in the index).
+    pub const ICON: &str = "icon";
+    /// A tag (any kind of entry; repeated for several, not concealed: it is in the index).
+    pub const TAG: &str = "tag";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +95,13 @@ pub struct EntrySummary {
     pub title: String,
     pub url: Option<String>,
     pub username: Option<String>,
+    /// The first `icon` field's bytes (a small PNG), for the list.
+    pub icon: Option<Vec<u8>>,
+    /// The entry has a one-time-code field (the list shows a clock).
+    pub has_otp: bool,
+    /// The entry's tags, in order (for the sidebar and search).
+    pub tags: Vec<String>,
+    pub created_at: u64,
     pub updated_at: u64,
 }
 
@@ -106,7 +119,36 @@ impl EntrySummary {
             title: entry.title.clone(),
             url: visible(field::URL),
             username: visible(field::USERNAME),
+            icon: entry.field(field::ICON).filter(|field| !field.concealed).map(|field| field.value.clone()),
+            has_otp: entry.field(field::TOTP).is_some(),
+            tags: entry
+                .fields
+                .iter()
+                .filter(|field| field.name == field::TAG && !field.concealed)
+                .filter_map(|field| String::from_utf8(field.value.clone()).ok())
+                .collect(),
+            created_at: entry.created_at,
             updated_at: entry.updated_at,
+        }
+    }
+}
+
+/// One field of an entry as the detail screen lists it: every name in order, the value only
+/// when it is not concealed (and is UTF-8). Concealed values come one at a time through
+/// `Vault::secret`.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct FieldSummary {
+    pub name: String,
+    pub concealed: bool,
+    pub value: Option<String>,
+}
+
+impl FieldSummary {
+    pub(crate) fn new(field: &Field) -> Self {
+        Self {
+            name: field.name.clone(),
+            concealed: field.concealed,
+            value: if field.concealed { None } else { String::from_utf8(field.value.clone()).ok() },
         }
     }
 }

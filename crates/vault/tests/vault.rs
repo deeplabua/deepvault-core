@@ -71,6 +71,94 @@ fn concealed_fields_stay_out_of_the_index() {
 }
 
 #[test]
+fn an_updated_entry_keeps_its_id_place_and_creation_date() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let first = vault.add_entry(login("First", "one"));
+    vault.add_entry(login("Second", "two"));
+    let created = vault.entries()[0].created_at;
+    let sealed_before = vault.to_bytes();
+
+    let mut changed = login("First, renamed", "uno");
+    changed.fields.retain(|field| field.name != field::URL);
+    vault.update_entry(&first, changed).unwrap();
+
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let summary = &reopened.entries()[0];
+    assert_eq!(summary.id, first);
+    assert_eq!(summary.title, "First, renamed");
+    assert_eq!(summary.url, None);
+    assert_eq!(summary.created_at, created);
+    assert!(summary.updated_at >= created);
+    assert_eq!(reopened.entries()[1].title, "Second");
+    assert_eq!(reopened.secret(&first, field::PASSWORD).unwrap().expose(), b"uno");
+    // Sealed again in place: the file changed, the block count did not.
+    assert_ne!(vault.to_bytes(), sealed_before);
+    assert_eq!(reopened.entries().len(), 2);
+}
+
+#[test]
+fn only_live_entries_can_be_updated() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let gone = vault.add_entry(login("Gone", "x"));
+    vault.delete_entry(&gone).unwrap();
+    assert_eq!(vault.update_entry(&gone, login("Back", "y")).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.update_entry(&[7; 16], login("Never", "z")).err(), Some(VaultError::NotFound));
+    assert!(vault.entries().is_empty());
+}
+
+#[test]
+fn fields_list_names_in_order_without_concealed_values() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let id = vault.add_entry(login("Example", "s3cret"));
+    let fields = vault.fields(&id).unwrap();
+    let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, [field::URL, field::USERNAME, field::PASSWORD]);
+    assert_eq!(fields[1].value.as_deref(), Some("alice"));
+    assert!(fields[2].concealed);
+    assert_eq!(fields[2].value, None);
+    vault.delete_entry(&id).unwrap();
+    assert_eq!(vault.fields(&id).err(), Some(VaultError::NotFound));
+}
+
+#[test]
+fn repeated_fields_are_read_by_position_and_codes_never_show_the_secret() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let field =
+        |name: &str, value: &[u8], concealed| Field { name: name.into(), value: value.to_vec(), concealed };
+    let id = vault.add_entry(NewEntry {
+        kind: EntryKind::Login,
+        title: "Many".into(),
+        fields: vec![
+            field(field::URL, b"https://one.example", false),
+            field(field::URL, b"https://two.example", false),
+            field(field::NOTES, b"open note", false),
+            field(field::NOTES, b"closed note", true),
+            // RFC 6238's SHA1 seed.
+            field(field::TOTP, b"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", true),
+            field(field::ICON, &[0x89, b'P', b'N', b'G'], false),
+            field(field::TAG, b"work", false),
+            field(field::TAG, b"servers", false),
+        ],
+    });
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let summary = &reopened.entries()[0];
+    assert_eq!(summary.url.as_deref(), Some("https://one.example"));
+    assert_eq!(summary.icon.as_deref(), Some(&[0x89, b'P', b'N', b'G'][..]));
+    assert!(summary.has_otp);
+    assert_eq!(summary.tags, ["work", "servers"]);
+
+    let fields = reopened.fields(&id).unwrap();
+    assert_eq!(fields[1].value.as_deref(), Some("https://two.example"));
+    assert_eq!(fields[3].value, None);
+    assert_eq!(reopened.secret_at(&id, 3).unwrap().expose(), b"closed note");
+    assert_eq!(reopened.secret_at(&id, 8).err(), Some(VaultError::NotFound));
+
+    let code = reopened.totp(&id, 4, 59).unwrap();
+    assert_eq!((code.code.as_str(), code.remaining), ("287082", 1));
+    assert_eq!(reopened.totp(&id, 0, 59).err(), Some(VaultError::InvalidOtp));
+}
+
+#[test]
 fn a_deleted_entry_leaves_a_tombstone() {
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
     let gone = vault.add_entry(login("Gone", "x"));

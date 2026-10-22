@@ -18,6 +18,8 @@ pub enum VaultError {
     InvalidKey,
     /// No live entry with this id, or no such field in it.
     NotFound,
+    /// A one-time-code field that is neither an `otpauth://totp/` URI nor a base32 secret.
+    InvalidOtp,
 }
 
 impl fmt::Display for VaultError {
@@ -29,6 +31,7 @@ impl fmt::Display for VaultError {
             Self::InvalidKdfParams => f.write_str("KDF parameters out of the allowed range"),
             Self::InvalidKey => f.write_str("a key must be 32 bytes"),
             Self::NotFound => f.write_str("no such entry or field"),
+            Self::InvalidOtp => f.write_str("not a TOTP secret or otpauth URI"),
         }
     }
 }

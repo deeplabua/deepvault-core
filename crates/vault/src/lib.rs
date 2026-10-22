@@ -18,14 +18,16 @@ mod format;
 pub mod kdf;
 pub mod keys;
 mod secret;
+pub mod totp;
 mod vault;
 
 pub use entropy::{Entropy, SystemEntropy};
-pub use entry::{field, EntryKind, EntrySummary, Field, NewEntry};
+pub use entry::{field, EntryKind, EntrySummary, Field, FieldSummary, NewEntry};
 pub use error::{Result, VaultError};
 pub use format::{MAGIC, VERSION};
 pub use kdf::KdfParams;
 pub use secret::{Key, SecretBytes};
+pub use totp::TotpCode;
 pub use vault::Vault;
 
 /// Deterministic pieces for test vectors. Behind the `testing` feature: never in the app.
