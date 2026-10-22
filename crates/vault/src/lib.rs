@@ -15,9 +15,11 @@ mod entropy;
 mod entry;
 mod error;
 mod format;
+pub mod generator;
 pub mod kdf;
 pub mod keys;
 mod secret;
+pub mod strength;
 pub mod totp;
 mod vault;
 

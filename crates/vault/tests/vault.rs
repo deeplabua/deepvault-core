@@ -153,6 +153,8 @@ fn repeated_fields_are_read_by_position_and_codes_never_show_the_secret() {
     assert_eq!(reopened.secret_at(&id, 3).unwrap().expose(), b"closed note");
     assert_eq!(reopened.secret_at(&id, 8).err(), Some(VaultError::NotFound));
 
+    assert_eq!(reopened.strength(&id, 3).unwrap().length, 11);
+
     let code = reopened.totp(&id, 4, 59).unwrap();
     assert_eq!((code.code.as_str(), code.remaining), ("287082", 1));
     assert_eq!(reopened.totp(&id, 0, 59).err(), Some(VaultError::InvalidOtp));

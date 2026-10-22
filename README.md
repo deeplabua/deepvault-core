@@ -38,6 +38,12 @@ picture, whether there is a one-time code. Concealed values are decrypted one fi
 One-time codes (RFC 6238, `crates/vault/src/totp.rs`) are computed in the core from an
 `otpauth://totp/…` link or a base32 setup key: the app gets the code, never the secret.
 
+## Generator
+
+Passwords, passphrases and PINs (`crates/vault/src/generator.rs`) from the system CSPRNG, every
+choice uniform (rejection sampling, no modulo bias). Passphrases use the
+[EFF large word list](https://www.eff.org/dice) (7776 words, 12.9 bits each), CC BY 3.0 — see NOTICE.
+
 ## Layout
 
 | Path | What |
@@ -66,9 +72,10 @@ in ADR-0001; a new one needs an ADR.
 
 ```toml
 [dependencies]
-deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.2.0" }
+deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.3.0" }
 ```
 
 ## License
 
-MIT OR Apache-2.0, at your option. Security reports: [SECURITY.md](SECURITY.md).
+MIT OR Apache-2.0, at your option; the EFF word list is CC BY 3.0 ([NOTICE](NOTICE)).
+Security reports: [SECURITY.md](SECURITY.md).

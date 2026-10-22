@@ -1,0 +1,12 @@
+deepvault-core
+Copyright DeepLab. Licensed under MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
+
+This crate includes the EFF large word list for passphrases
+(crates/vault/src/wordlists/eff_large.txt, 7776 words, the dice numbers removed):
+
+  EFF's Long Wordlist for Dice-Generated Passphrases
+  © Electronic Frontier Foundation, https://www.eff.org/dice
+  Licensed under the Creative Commons Attribution 3.0 License (CC BY 3.0),
+  https://creativecommons.org/licenses/by/3.0/us/
+  Source: https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+  SHA-256 of the source file: addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e

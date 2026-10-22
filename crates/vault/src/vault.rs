@@ -216,6 +216,14 @@ impl Vault {
         Ok(SecretBytes::new(field.value.clone()))
     }
 
+    /// How strong the field at `index` is (a password): rated here, so it never leaves the core.
+    pub fn strength(&self, id: &[u8; ENTRY_ID_LEN], index: usize) -> Result<crate::strength::Strength> {
+        let entry = self.live(id)?;
+        let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
+        let text = std::str::from_utf8(&field.value).map_err(|_| VaultError::NotFound)?;
+        Ok(crate::strength::estimate(text))
+    }
+
     /// The one-time code of the TOTP field at `index` at `unix_time`. The secret stays here.
     pub fn totp(&self, id: &[u8; ENTRY_ID_LEN], index: usize, unix_time: u64) -> Result<crate::TotpCode> {
         let entry = self.live(id)?;

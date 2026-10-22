@@ -20,6 +20,8 @@ pub enum VaultError {
     NotFound,
     /// A one-time-code field that is neither an `otpauth://totp/` URI nor a base32 secret.
     InvalidOtp,
+    /// Generator options out of range: length, word count, a letter as separator.
+    InvalidGeneratorOptions,
 }
 
 impl fmt::Display for VaultError {
@@ -32,6 +34,7 @@ impl fmt::Display for VaultError {
             Self::InvalidKey => f.write_str("a key must be 32 bytes"),
             Self::NotFound => f.write_str("no such entry or field"),
             Self::InvalidOtp => f.write_str("not a TOTP secret or otpauth URI"),
+            Self::InvalidGeneratorOptions => f.write_str("generator options out of range"),
         }
     }
 }
