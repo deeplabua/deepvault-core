@@ -81,7 +81,7 @@ in ADR-0001; a new one needs an ADR.
 
 ```toml
 [dependencies]
-deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.5.3" }
+deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.6.0" }
 ```
 
 ## License

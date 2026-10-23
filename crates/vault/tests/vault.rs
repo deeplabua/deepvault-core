@@ -521,3 +521,22 @@ fn importing_again_adds_only_what_is_new_and_keeps_what_the_user_did() {
     let third = vault.import(vec![login("Example", "s3cret")]).unwrap();
     assert_eq!(third, vault::Merged { added: 0, matched: 1, tagged: 0 });
 }
+
+#[test]
+fn a_backup_restores_into_the_vault_in_use_without_doubling() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    vault.add_entry(login("Example", "s3cret"));
+    let backup = Vault::open(&vault.to_bytes(), PASSWORD).unwrap();
+    // Since the backup: one more entry here, one deleted.
+    vault.add_entry(login("New here", "n"));
+    let gone = vault.add_entry(login("Deleted here", "d"));
+    let mut older = Vault::open(&vault.to_bytes(), PASSWORD).unwrap();
+    vault.delete_entry(&gone).unwrap();
+    older.delete_entry(&older.entries().iter().find(|e| e.title == "New here").unwrap().id.clone()).unwrap();
+
+    let merged = vault.import(older.export_entries().unwrap()).unwrap();
+    assert_eq!(merged, vault::Merged { added: 1, matched: 1, tagged: 0 });
+    let titles: Vec<_> = vault.entries().iter().map(|e| e.title.as_str()).collect();
+    assert_eq!(titles, ["Example", "New here", "Deleted here"]);
+    assert_eq!(backup.export_entries().unwrap().len(), 1);
+}

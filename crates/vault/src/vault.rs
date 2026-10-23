@@ -208,6 +208,19 @@ impl Vault {
         Ok(merged)
     }
 
+    /// Every live entry as `import` takes them — kind, title, fields — for moving the entries of
+    /// one vault into another (a backup restored into the vault in use). Dates are not carried:
+    /// the receiving vault gives its own. The values stay zeroed-on-drop fields.
+    pub fn export_entries(&self) -> Result<Vec<NewEntry>> {
+        self.index
+            .iter()
+            .map(|summary| {
+                let entry = self.live(&summary.id)?;
+                Ok(NewEntry { kind: entry.kind, title: entry.title.clone(), fields: entry.fields.clone() })
+            })
+            .collect()
+    }
+
     /// Replaces the entry with a tombstone: its kind and dates stay, the content goes.
     pub fn delete_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
