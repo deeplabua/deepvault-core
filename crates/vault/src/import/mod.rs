@@ -63,7 +63,9 @@ fn host(url: &[u8]) -> Option<String> {
     let rest = text.split_once("://").map_or(text, |(_, rest)| rest);
     let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.split(':').next()?;
     let host = host.strip_prefix("www.").unwrap_or(host);
-    (!host.is_empty()).then(|| host.to_lowercase())
+    // A name of letters, digits, dots and hyphens; not `%3chtml%3e…` someone saved as an address.
+    let valid = host.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-');
+    (!host.is_empty() && valid).then(|| host.to_lowercase())
 }
 
 #[cfg(test)]
@@ -75,6 +77,7 @@ mod tests {
         assert_eq!(host(b"https://www.GitHub.com/login?x=1").as_deref(), Some("github.com"));
         assert_eq!(host(b"user@example.org:8443").as_deref(), Some("example.org"));
         assert_eq!(host(b""), None);
+        assert_eq!(host(b"https://%3chtml%3e%3chead%3e"), None);
     }
 
     #[test]

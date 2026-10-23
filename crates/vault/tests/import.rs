@@ -156,8 +156,21 @@ fn secrets_xml() {
       <archived>1</archived>
       <identifier>IoT</identifier>
       <name></name>
+      <oneTimePassword><algorithm>SHA256</algorithm><digits>8</digits><period>30</period><seed>MTIzNDU2Nzg5MDEyMzQ1Njc4OTA=</seed></oneTimePassword>
       <secrets><secret><kind>0</kind><secretValue>wifi-pass</secretValue></secret></secrets>
       <services><service><address>https://router.example.org/admin</address></service></services>
+      <trashed>0</trashed>
+    </credential>
+    <credential>
+      <builtinServiceLogo>mail</builtinServiceLogo>
+      <name>Mail</name>
+      <oneTimePasswords><oneTimePassword><algorithm>SHA1</algorithm><digits>6</digits><period>30</period><seed>MTIzNDU2Nzg5MDEyMzQ1Njc4OTA=</seed></oneTimePassword></oneTimePasswords>
+      <passkeyEnabled>0</passkeyEnabled>
+      <trashed>0</trashed>
+    </credential>
+    <credential>
+      <name></name>
+      <services><service><address>https://%3chtml%3e%3chead%3e</address></service></services>
       <trashed>0</trashed>
     </credential>
     <credential>
@@ -170,8 +183,9 @@ fn secrets_xml() {
     );
     let imported = import(&xml);
     assert_eq!(imported.format, Format::Secrets);
-    assert_eq!(imported.skipped, 1);
-    let [reve, router] = &imported.entries[..] else { panic!("two entries") };
+    // The trashed item and the one with only a broken address (no name, no site to name it by).
+    assert_eq!(imported.skipped, 2);
+    let [reve, router, mail] = &imported.entries[..] else { panic!("three entries") };
     assert_eq!(reve.title, "reve.com");
     assert_eq!(
         fields(reve),
@@ -189,6 +203,15 @@ fn secrets_xml() {
     // No name: the site's host; archived: kept, tagged.
     assert_eq!(router.title, "router.example.org");
     assert_eq!(fields(router).last().unwrap(), &known(field::TAG, "archived", false));
+    // The seed is base64 in Secrets, base32 here; unusual settings make an otpauth link.
+    const RFC_SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    assert!(fields(router).contains(&known(
+        field::TOTP,
+        &format!("otpauth://totp/?secret={RFC_SEED}&algorithm=SHA256&digits=8&period=30"),
+        true
+    )));
+    // The logo's name and the passkey flag are Secrets' own, not the item's.
+    assert_eq!(fields(mail), vec![known(field::TOTP, RFC_SEED, true)]);
 }
 
 #[test]
