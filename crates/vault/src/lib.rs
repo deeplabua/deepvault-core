@@ -31,7 +31,7 @@ pub use format::{MAGIC, VERSION};
 pub use kdf::KdfParams;
 pub use secret::{Key, SecretBytes};
 pub use totp::TotpCode;
-pub use vault::Vault;
+pub use vault::{Merged, Vault};
 
 /// Deterministic pieces for test vectors. Behind the `testing` feature: never in the app.
 #[cfg(feature = "testing")]

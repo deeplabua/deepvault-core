@@ -3,12 +3,13 @@
 
 use crate::aead::{self, NONCE_LEN};
 use crate::entropy::{Entropy, SystemEntropy};
-use crate::entry::{Entry, EntrySummary, FieldSummary, NewEntry};
+use crate::entry::{field, Entry, EntryKind, EntrySummary, Field, FieldSummary, NewEntry};
 use crate::error::{Result, VaultError};
 use crate::format::{self, Block, Header, KdfHeader, SlotHeader, ENTRY_ID_LEN};
 use crate::kdf::{self, KdfParams, SALT_LEN};
 use crate::keys::{self, SlotKind, Subkeys, VAULT_ID_LEN, WRAPPED_VK_LEN};
 use crate::secret::{Key, SecretBytes};
+use zeroize::Zeroizing;
 
 const KDF_ALG: &str = "argon2id";
 /// Device slot: `version (1) ‖ nonce (24 B) ‖ wrapped VK (48 B)`.
@@ -164,6 +165,49 @@ impl Vault {
         id
     }
 
+    /// Adds another password manager's entries (`import::parse`), leaving out those the vault
+    /// already has — so importing the same export again, or a newer one, adds only what is new
+    /// and keeps what the user did here (pictures, links, edits). An entry is already there when
+    /// a live one has its kind, title and fields, whatever their order, not counting what an
+    /// import never brings: tags, the picture, links. Its tags are added to that entry.
+    pub fn import(&mut self, entries: Vec<NewEntry>) -> Result<Merged> {
+        let mut existing = Vec::with_capacity(self.index.len());
+        for summary in &self.index {
+            let entry = self.live(&summary.id)?;
+            let key = Comparable::of(entry.kind, &entry.title, &entry.fields);
+            existing.push((summary.id, key, false));
+        }
+        let mut merged = Merged::default();
+        for new in entries {
+            let key = Comparable::of(new.kind, &new.title, &new.fields);
+            let Some(found) = existing.iter_mut().find(|(_, other, used)| !used && *other == key) else {
+                self.add_entry(new);
+                merged.added += 1;
+                continue;
+            };
+            found.2 = true;
+            merged.matched += 1;
+            let id = found.0;
+            let mut entry = self.live(&id)?;
+            let mut tagged = false;
+            for tag in new.fields.iter().filter(|field| field.name == field::TAG && !field.custom) {
+                let known = entry.fields.iter().any(|field| {
+                    field.name == field::TAG && !field.custom && field.value.eq_ignore_ascii_case(&tag.value)
+                });
+                if !known {
+                    entry.fields.push(tag.clone());
+                    tagged = true;
+                }
+            }
+            if tagged {
+                let fields = std::mem::take(&mut entry.fields);
+                self.update_entry(&id, NewEntry { kind: entry.kind, title: entry.title.clone(), fields })?;
+                merged.tagged += 1;
+            }
+        }
+        Ok(merged)
+    }
+
     /// Replaces the entry with a tombstone: its kind and dates stay, the content goes.
     pub fn delete_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
@@ -282,6 +326,50 @@ impl Vault {
         let aad = keys::aad("entry", &self.header.vault_id, &id);
         let ciphertext = aead::seal(&self.keys.entries, &nonce, &entry.to_cbor(), &aad);
         Block { entry_id: id, nonce, ciphertext }
+    }
+}
+
+/// What `Vault::import` did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Merged {
+    /// New entries.
+    pub added: usize,
+    /// Entries the vault had already, left as they are…
+    pub matched: usize,
+    /// …of which these got the import's tags.
+    pub tagged: usize,
+}
+
+/// An entry as an import would bring it, for telling whether the vault has it: its kind,
+/// title and fields sorted, without tags, the picture and links; a site without its scheme
+/// and trailing slash (`gmail.com` is saved as `https://gmail.com`). Zeroed on drop.
+#[derive(PartialEq, Eq)]
+struct Comparable {
+    kind: EntryKind,
+    title: String,
+    fields: Vec<(String, Zeroizing<Vec<u8>>, bool)>,
+}
+
+impl Comparable {
+    fn of(kind: EntryKind, title: &str, fields: &[Field]) -> Self {
+        let mut compared: Vec<_> = fields
+            .iter()
+            .filter(|field| {
+                field.custom || ![field::TAG, field::ICON, field::LINK].contains(&field.name.as_str())
+            })
+            .map(|field| {
+                let mut value = Zeroizing::new(field.value.clone());
+                if !field.custom && field.name == field::URL {
+                    let site = value.strip_prefix(b"https://").or_else(|| value.strip_prefix(b"http://"));
+                    let site = site.unwrap_or(&value);
+                    let site = site.strip_suffix(b"/").unwrap_or(site);
+                    value = Zeroizing::new(site.to_ascii_lowercase());
+                }
+                (field.name.clone(), value, field.custom)
+            })
+            .collect();
+        compared.sort_by(|a, b| (&a.0, a.1.as_slice(), a.2).cmp(&(&b.0, b.1.as_slice(), b.2)));
+        Self { kind, title: title.trim().to_owned(), fields: compared }
     }
 }
 

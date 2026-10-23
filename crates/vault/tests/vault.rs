@@ -481,3 +481,43 @@ fn a_header_that_claims_huge_lengths_is_refused_cheaply() {
     many[header_mac.end..header_mac.end + 4].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(open(&many).err(), Some(VaultError::Corrupted));
 }
+
+fn plain(name: &str, value: &str) -> Field {
+    Field { name: name.into(), value: value.as_bytes().to_vec(), concealed: false, custom: false }
+}
+
+#[test]
+fn importing_again_adds_only_what_is_new_and_keeps_what_the_user_did() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    // The first import, before tags were read.
+    let first = vault.import(vec![login("Example", "s3cret"), login("Other", "two")]).unwrap();
+    assert_eq!(first, vault::Merged { added: 2, matched: 0, tagged: 0 });
+    let example = vault.entries().iter().find(|e| e.title == "Example").unwrap().id;
+
+    // Saved by the app with a picture: its own field order, the site as typed without a slash.
+    let mut edited = login("Example", "s3cret");
+    edited.fields.reverse();
+    edited.fields.push(plain(field::ICON, "png"));
+    edited.fields.push(plain(field::TAG, "Work"));
+    vault.update_entry(&example, edited).unwrap();
+
+    // The same export again, now with tags, and a note that was missed.
+    let mut tagged = login("Example", "s3cret");
+    tagged.fields[0].value = b"https://EXAMPLE.com/".to_vec();
+    tagged.fields.push(plain(field::TAG, "work"));
+    tagged.fields.push(plain(field::TAG, "servers"));
+    let changed = login("Other", "changed in the other app");
+    let note = NewEntry { kind: EntryKind::Note, title: "gitlab".into(), fields: vec![] };
+    let again = vault.import(vec![tagged, changed, note]).unwrap();
+    assert_eq!(again, vault::Merged { added: 2, matched: 1, tagged: 1 });
+
+    let titles: Vec<_> = vault.entries().iter().map(|e| e.title.as_str()).collect();
+    assert_eq!(titles, ["Example", "Other", "Other", "gitlab"]);
+    let kept = vault.entries().iter().find(|e| e.id == example).unwrap();
+    assert_eq!(kept.icon.as_deref(), Some(&b"png"[..]));
+    assert_eq!(kept.tags, ["Work", "servers"]);
+
+    // Once more: nothing new.
+    let third = vault.import(vec![login("Example", "s3cret")]).unwrap();
+    assert_eq!(third, vault::Merged { added: 0, matched: 1, tagged: 0 });
+}
