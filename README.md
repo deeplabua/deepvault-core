@@ -29,9 +29,12 @@ The file layout is documented in [`crates/vault/src/format.rs`](crates/vault/src
 
 ## Entries
 
-An entry is a kind (`login`, `note`, `card`), a title and an ordered list of named fields, each
-visible or concealed. Names the app uses: `username`, `password`, `totp`, `url`, `notes`, `tag`,
-`icon` (`crates/vault/src/entry.rs`); a name may repeat (several sites, notes, tags). The index kept
+An entry is a kind (`login`, `password`, `note`, `card`, `bank_account`, `software_license`), a
+title and an ordered list of named fields, each visible or concealed. Names the app uses:
+`username`, `password`, `totp`, `url`, `notes`, `tag`, `icon`, `link` (another entry's id), a card's, a bank account's and a
+licence's (`crates/vault/src/entry.rs`); a name may repeat (several sites, notes, tags). A field
+marked `custom` is one the user named: its name is only a label (the flag is left out when false,
+so such fields are stored exactly as before). The index kept
 in memory while unlocked holds only visible values: title, first site and user name, tags, the
 picture, whether there is a one-time code. Concealed values are decrypted one field at a time.
 
@@ -72,7 +75,7 @@ in ADR-0001; a new one needs an ADR.
 
 ```toml
 [dependencies]
-deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.3.0" }
+deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.4.0" }
 ```
 
 ## License

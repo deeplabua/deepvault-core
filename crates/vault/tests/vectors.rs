@@ -65,6 +65,7 @@ impl Inputs {
                     name: f["name"].as_str().unwrap().into(),
                     value: f["value"].as_str().unwrap().as_bytes().to_vec(),
                     concealed: f["concealed"].as_bool().unwrap(),
+                    custom: false,
                 })
                 .collect(),
         }

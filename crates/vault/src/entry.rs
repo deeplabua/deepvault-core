@@ -16,24 +16,46 @@ pub mod field {
     pub const NUMBER: &str = "number";
     pub const EXPIRY: &str = "expiry";
     pub const CVV: &str = "cvv";
+    /// A bank account's bank, holder, IBAN (or account number), SWIFT/BIC and PIN (concealed).
+    pub const BANK: &str = "bank";
+    pub const HOLDER: &str = "holder";
+    pub const IBAN: &str = "iban";
+    pub const SWIFT: &str = "swift";
+    pub const PIN: &str = "pin";
+    /// A software licence's key (concealed), owner, e-mail, version and purchase date.
+    pub const LICENSE_KEY: &str = "license_key";
+    pub const LICENSED_TO: &str = "licensed_to";
+    pub const EMAIL: &str = "email";
+    pub const VERSION: &str = "version";
+    pub const PURCHASED: &str = "purchased";
     /// A TOTP secret: `otpauth://totp/…` or base32 (concealed).
     pub const TOTP: &str = "totp";
     /// The entry's picture, a small PNG the user chose (not concealed: it is in the index).
     pub const ICON: &str = "icon";
     /// A tag (any kind of entry; repeated for several, not concealed: it is in the index).
     pub const TAG: &str = "tag";
+    /// Another entry this one is linked to, by its id as 32 lowercase hex digits (repeated for
+    /// several, not concealed: it is in the index, so the other entry can show the link back).
+    pub const LINK: &str = "link";
 }
 
+/// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
+/// `software_license`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     Login,
     Note,
     Card,
+    BankAccount,
+    SoftwareLicense,
+    /// A password alone: an archive's, a router's, an app-specific one.
+    Password,
 }
 
 /// One named value. `concealed` values (passwords, notes, card numbers) stay out of the index
-/// and are decrypted only when asked for.
+/// and are decrypted only when asked for. A `custom` field is one the user named: its name is
+/// only a label, never one of `field` — a custom «password» is not the entry's password.
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
@@ -41,6 +63,13 @@ pub struct Field {
     #[serde(with = "cbor_bytes")]
     pub value: Vec<u8>,
     pub concealed: bool,
+    /// Left out when false, so a field without it is stored as it was before custom fields.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub custom: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// An entry as the app hands it in.
@@ -65,8 +94,9 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
+    /// The first field the app knows by `name` (custom fields are only labels).
     pub fn field(&self, name: &str) -> Option<&Field> {
-        self.fields.iter().find(|field| field.name == name)
+        self.fields.iter().find(|field| !field.custom && field.name == name)
     }
 
     /// CBOR in a buffer that is zeroed on drop. Reserved up front so the buffer does not
@@ -101,6 +131,14 @@ pub struct EntrySummary {
     pub has_otp: bool,
     /// The entry's tags, in order (for the sidebar and search).
     pub tags: Vec<String>,
+    /// The ids (32 lowercase hex digits) of the entries this one links to, in order.
+    pub links: Vec<String>,
+    /// A card's last four digits (`•••• 4417` in the list), from its `number` field: the rest
+    /// of the number stays sealed.
+    pub card_last4: Option<String>,
+    /// The card network from the number's first digits (`visa`, `mastercard`, `americanexpress`,
+    /// `discover`, `jcb`, `dinersclub`, `unionpay`, `maestro`, `mir`) for its logo.
+    pub card_network: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -121,10 +159,22 @@ impl EntrySummary {
             username: visible(field::USERNAME),
             icon: entry.field(field::ICON).filter(|field| !field.concealed).map(|field| field.value.clone()),
             has_otp: entry.field(field::TOTP).is_some(),
+            card_network: entry.field(field::NUMBER).and_then(|field| card_network(&field.value)),
+            card_last4: entry.field(field::NUMBER).and_then(|field| {
+                let digits: Vec<u8> = field.value.iter().copied().filter(u8::is_ascii_digit).collect();
+                (digits.len() >= 12)
+                    .then(|| String::from_utf8_lossy(&digits[digits.len() - 4..]).into_owned())
+            }),
             tags: entry
                 .fields
                 .iter()
-                .filter(|field| field.name == field::TAG && !field.concealed)
+                .filter(|field| field.name == field::TAG && !field.concealed && !field.custom)
+                .filter_map(|field| String::from_utf8(field.value.clone()).ok())
+                .collect(),
+            links: entry
+                .fields
+                .iter()
+                .filter(|field| field.name == field::LINK && !field.concealed && !field.custom)
                 .filter_map(|field| String::from_utf8(field.value.clone()).ok())
                 .collect(),
             created_at: entry.created_at,
@@ -140,6 +190,7 @@ impl EntrySummary {
 pub struct FieldSummary {
     pub name: String,
     pub concealed: bool,
+    pub custom: bool,
     pub value: Option<String>,
 }
 
@@ -148,7 +199,31 @@ impl FieldSummary {
         Self {
             name: field.name.clone(),
             concealed: field.concealed,
+            custom: field.custom,
             value: if field.concealed { None } else { String::from_utf8(field.value.clone()).ok() },
         }
     }
+}
+
+/// The network of a card number by its leading digits (IIN ranges); `None` when unknown.
+fn card_network(number: &[u8]) -> Option<String> {
+    let digits: Vec<u32> =
+        number.iter().filter(|b| b.is_ascii_digit()).map(|b| u32::from(b - b'0')).collect();
+    if digits.len() < 12 {
+        return None;
+    }
+    let prefix = |n: usize| digits[..n].iter().fold(0u32, |acc, d| acc * 10 + d);
+    let network = match (prefix(1), prefix(2), prefix(4)) {
+        (4, _, _) => "visa",
+        (_, 34 | 37, _) => "americanexpress",
+        (_, 51..=55, _) | (_, _, 2221..=2720) => "mastercard",
+        (_, _, 2200..=2204) => "mir",
+        (_, 36 | 38 | 39, _) | (_, 30, _) => "dinersclub",
+        (_, 62, _) => "unionpay",
+        (_, 65, _) | (_, _, 6011) => "discover",
+        (_, _, 3528..=3589) => "jcb",
+        (_, 50 | 56..=58, _) | (_, 63 | 67, _) => "maestro",
+        _ => return None,
+    };
+    Some(network.to_string())
 }

@@ -12,9 +12,19 @@ fn login(title: &str, password: &str) -> NewEntry {
         kind: EntryKind::Login,
         title: title.into(),
         fields: vec![
-            Field { name: field::URL.into(), value: b"https://example.com".to_vec(), concealed: false },
-            Field { name: field::USERNAME.into(), value: b"alice".to_vec(), concealed: false },
-            Field { name: field::PASSWORD.into(), value: password.as_bytes().to_vec(), concealed: true },
+            Field {
+                name: field::URL.into(),
+                value: b"https://example.com".to_vec(),
+                concealed: false,
+                custom: false,
+            },
+            Field { name: field::USERNAME.into(), value: b"alice".to_vec(), concealed: false, custom: false },
+            Field {
+                name: field::PASSWORD.into(),
+                value: password.as_bytes().to_vec(),
+                concealed: true,
+                custom: false,
+            },
         ],
     }
 }
@@ -63,7 +73,12 @@ fn concealed_fields_stay_out_of_the_index() {
     let id = vault.add_entry(NewEntry {
         kind: EntryKind::Login,
         title: "Hidden".into(),
-        fields: vec![Field { name: field::USERNAME.into(), value: b"bob".to_vec(), concealed: true }],
+        fields: vec![Field {
+            name: field::USERNAME.into(),
+            value: b"bob".to_vec(),
+            concealed: true,
+            custom: false,
+        }],
     });
     assert_eq!(vault.entries()[0].username, None);
     assert_eq!(vault.secret(&id, field::USERNAME).unwrap().expose(), b"bob");
@@ -123,8 +138,12 @@ fn fields_list_names_in_order_without_concealed_values() {
 #[test]
 fn repeated_fields_are_read_by_position_and_codes_never_show_the_secret() {
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
-    let field =
-        |name: &str, value: &[u8], concealed| Field { name: name.into(), value: value.to_vec(), concealed };
+    let field = |name: &str, value: &[u8], concealed| Field {
+        name: name.into(),
+        value: value.to_vec(),
+        concealed,
+        custom: false,
+    };
     let id = vault.add_entry(NewEntry {
         kind: EntryKind::Login,
         title: "Many".into(),
@@ -158,6 +177,120 @@ fn repeated_fields_are_read_by_position_and_codes_never_show_the_secret() {
     let code = reopened.totp(&id, 4, 59).unwrap();
     assert_eq!((code.code.as_str(), code.remaining), ("287082", 1));
     assert_eq!(reopened.totp(&id, 0, 59).err(), Some(VaultError::InvalidOtp));
+}
+
+#[test]
+fn a_card_shows_only_its_last_four_digits() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let card = vault.add_entry(NewEntry {
+        kind: EntryKind::Card,
+        title: "Mono".into(),
+        fields: vec![
+            Field {
+                name: field::NUMBER.into(),
+                value: b"4111 1111 1111 4417".to_vec(),
+                concealed: true,
+                custom: false,
+            },
+            Field { name: field::CVV.into(), value: b"123".to_vec(), concealed: true, custom: false },
+        ],
+    });
+    let summary = vault.entries().iter().find(|e| e.id == card).unwrap();
+    assert_eq!(summary.card_last4.as_deref(), Some("4417"));
+    assert_eq!(summary.card_network.as_deref(), Some("visa"));
+    assert_eq!(summary.kind, EntryKind::Card);
+    // A login has none; a short number is not a card number.
+    vault.add_entry(login("Site", "x"));
+    assert_eq!(vault.entries()[1].card_last4, None);
+}
+
+#[test]
+fn every_kind_is_stored_by_name_and_survives_reopening() {
+    let kinds = [
+        (EntryKind::Login, "login"),
+        (EntryKind::Password, "password"),
+        (EntryKind::Note, "note"),
+        (EntryKind::Card, "card"),
+        (EntryKind::BankAccount, "bank_account"),
+        (EntryKind::SoftwareLicense, "software_license"),
+    ];
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    for (kind, name) in kinds {
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&kind, &mut cbor).unwrap();
+        assert_eq!(
+            ciborium::from_reader::<ciborium::Value, _>(&cbor[..]).unwrap(),
+            ciborium::Value::Text(name.into())
+        );
+        vault.add_entry(NewEntry { kind, title: name.into(), fields: vec![] });
+    }
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let mut stored: Vec<_> = reopened.entries().iter().map(|e| (e.title.clone(), e.kind)).collect();
+    stored.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected: Vec<_> = kinds.iter().map(|(kind, name)| (name.to_string(), *kind)).collect();
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(stored, expected);
+}
+
+#[test]
+fn a_custom_field_is_only_a_label() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let id = vault.add_entry(NewEntry {
+        kind: EntryKind::Note,
+        title: "GitLab tokens".into(),
+        fields: vec![
+            Field {
+                name: field::PASSWORD.into(),
+                value: b"glpat-123".to_vec(),
+                concealed: true,
+                custom: true,
+            },
+            Field { name: field::URL.into(), value: b"not a site".to_vec(), concealed: false, custom: true },
+            Field { name: field::TAG.into(), value: b"not a tag".to_vec(), concealed: false, custom: true },
+        ],
+    });
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let summary = reopened.entries().iter().find(|e| e.id == id).unwrap();
+    assert_eq!(summary.url, None);
+    assert!(summary.tags.is_empty());
+    assert_eq!(reopened.secret(&id, field::PASSWORD).err(), Some(VaultError::NotFound));
+    let fields = reopened.fields(&id).unwrap();
+    assert!(fields.iter().all(|f| f.custom));
+    assert_eq!(reopened.secret_at(&id, 0).unwrap().expose(), b"glpat-123");
+}
+
+#[test]
+fn a_field_that_is_not_custom_is_stored_as_before() {
+    let field = Field { name: "url".into(), value: b"x".to_vec(), concealed: false, custom: false };
+    let mut cbor = Vec::new();
+    ciborium::into_writer(&field, &mut cbor).unwrap();
+    let ciborium::Value::Map(keys) = ciborium::from_reader(&cbor[..]).unwrap() else { panic!("a map") };
+    let names: Vec<_> = keys.iter().filter_map(|(key, _)| key.as_text()).collect();
+    assert_eq!(names, ["name", "value", "concealed"]);
+}
+
+#[test]
+fn links_are_in_the_index() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let note =
+        vault.add_entry(NewEntry { kind: EntryKind::Note, title: "Recovery codes".into(), fields: vec![] });
+    let target = note.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let login = vault.add_entry(NewEntry {
+        kind: EntryKind::Login,
+        title: "GitLab".into(),
+        fields: vec![
+            Field {
+                name: field::LINK.into(),
+                value: target.clone().into_bytes(),
+                concealed: false,
+                custom: false,
+            },
+            Field { name: field::LINK.into(), value: b"label only".to_vec(), concealed: false, custom: true },
+        ],
+    });
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let summary = reopened.entries().iter().find(|e| e.id == login).unwrap();
+    assert_eq!(summary.links, vec![target]);
 }
 
 #[test]
