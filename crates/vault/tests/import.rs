@@ -149,6 +149,10 @@ fn secrets_xml() {
         <service><address>https://reve.com</address></service>
       </services>
       <securityQuestion>Pet's name</securityQuestion>
+      <tags>
+        <tag><creationDate>2026-01-01T00:00:00.000Z</creationDate><name>work</name><uuid>A1</uuid></tag>
+        <tag><name> ai </name></tag>
+      </tags>
       <trashed>0</trashed>
       <uuid>3ED31704-FA88-426D-95B2-C2ACA1EED02F</uuid>
     </credential>
@@ -179,13 +183,37 @@ fn secrets_xml() {
       <trashed>1</trashed>
     </credential>
   </credentials>
+  <creditCards>
+    <creditCard>
+      <brand>visa</brand>
+      <cardholder>ALICE EXAMPLE</cardholder>
+      <expirationDate>2029-05-31T23:59:59.000Z</expirationDate>
+      <name>Monobank</name>
+      <notes>limit 1000</notes>
+      <pan>4111 1111 1111 1111</pan>
+      <securityCode>123</securityCode>
+      <trashed>0</trashed>
+    </creditCard>
+  </creditCards>
+  <notes>
+    <note>
+      <tags><tag><name>servers</name></tag></tags>
+      <text>Password: x&lt;y
+second line</text>
+      <title>gitlab</title>
+      <trashed>0</trashed>
+    </note>
+    <note><title>Empty</title><trashed>0</trashed></note>
+    <note><text>gone</text><title>Old</title><trashed>1</trashed></note>
+  </notes>
 </secrets>"#
     );
     let imported = import(&xml);
     assert_eq!(imported.format, Format::Secrets);
-    // The trashed item and the one with only a broken address (no name, no site to name it by).
-    assert_eq!(imported.skipped, 2);
-    let [reve, router, mail] = &imported.entries[..] else { panic!("three entries") };
+    // The trashed login and note, and the login with only a broken address (no name, no site
+    // to name it by).
+    assert_eq!(imported.skipped, 3);
+    let [reve, router, mail, card, gitlab, empty] = &imported.entries[..] else { panic!("six entries") };
     assert_eq!(reve.title, "reve.com");
     assert_eq!(
         fields(reve),
@@ -198,6 +226,8 @@ fn secrets_xml() {
             known(field::NOTES, "key: sk_test_&123", true),
             ("Secret".into(), "1234".into(), true, true),
             ("securityQuestion".into(), "Pet's name".into(), true, true),
+            known(field::TAG, "work", false),
+            known(field::TAG, "ai", false),
         ]
     );
     // No name: the site's host; archived: kept, tagged.
@@ -212,6 +242,26 @@ fn secrets_xml() {
     )));
     // The logo's name and the passkey flag are Secrets' own, not the item's.
     assert_eq!(fields(mail), vec![known(field::TOTP, RFC_SEED, true)]);
+
+    // A card: the number as digits, the expiry as the app writes it; the brand is the number's.
+    assert_eq!((card.kind, card.title.as_str()), (EntryKind::Card, "Monobank"));
+    assert_eq!(
+        fields(card),
+        vec![
+            known(field::CARDHOLDER, "ALICE EXAMPLE", false),
+            known(field::NUMBER, "4111111111111111", true),
+            known(field::EXPIRY, "05/29", false),
+            known(field::CVV, "123", true),
+            known(field::NOTES, "limit 1000", true),
+        ]
+    );
+    // Secure notes, one with only a title.
+    assert_eq!((gitlab.kind, gitlab.title.as_str()), (EntryKind::Note, "gitlab"));
+    assert_eq!(
+        fields(gitlab),
+        vec![known(field::NOTES, "Password: x<y\nsecond line", true), known(field::TAG, "servers", false)]
+    );
+    assert_eq!((empty.kind, empty.title.as_str(), fields(empty).len()), (EntryKind::Note, "Empty", 0));
 }
 
 #[test]

@@ -1,10 +1,17 @@
-//! The XML export of Secrets (macOS): `<credential>` items with a `name`, an `identifier`
-//! (user name), `secrets/secret` (passwords; `kind` 0 — other kinds are kept as fields),
-//! `services/service/address` (sites), `notes` and `oneTimePassword` (a one-time-code seed in
-//! base64 with its algorithm, digits and period). Items in its trash are skipped; archived ones
-//! are kept with an `archived` tag; archived secrets (old passwords) are left out.
-//! Any other element with text is kept as the user's own concealed field, so nothing in the
-//! file is lost because this mapping does not know it.
+//! The XML export of Secrets (macOS), three kinds of item:
+//!
+//! - `credentials/credential` — logins: a `name`, an `identifier` (user name), `secrets/secret`
+//!   (passwords; `kind` 0 — other kinds are kept as fields), `services/service/address`
+//!   (sites), `notes` and `oneTimePassword` (a one-time-code seed in base64 with its algorithm,
+//!   digits and period);
+//! - `creditCards/creditCard` — cards: `name`, `cardholder`, `pan`, `expirationDate` (the last
+//!   second of the month, ISO 8601), `securityCode`, `notes`;
+//! - `notes/note` — secure notes: `title` and `text`.
+//!
+//! Each may have `tags/tag/name`. Items in its trash are skipped; archived ones are kept with an
+//! `archived` tag; archived secrets (old passwords) are left out. Any other element with text
+//! is kept as the user's own concealed field, so nothing in the file is lost because this
+//! mapping does not know it.
 
 use zeroize::{Zeroize, Zeroizing};
 
@@ -26,43 +33,140 @@ const BOOKKEEPING: &[&str] = &[
     "trashed",
     "archived",
     "builtinServiceLogo",
+    // A card's network: the app tells it from the number.
+    "brand",
 ];
+
+/// One kind of item as an entry; `None` when it has nothing to keep.
+type MakeEntry = fn(&Element, &[u8]) -> Option<NewEntry>;
 
 pub(super) fn parse(bytes: &[u8]) -> Result<Imported> {
     let root = xml::parse(bytes).ok_or(VaultError::InvalidImport)?;
-    let mut credentials = Vec::new();
-    root.find_all("credential", &mut credentials);
-    if credentials.is_empty() {
-        return Err(VaultError::InvalidImport);
-    }
+    let kinds: [(&str, MakeEntry); 3] = [("credential", login), ("creditCard", card), ("note", note)];
     let mut entries = Vec::new();
     let mut skipped = 0;
-    for credential in credentials {
-        match entry(credential, bytes) {
-            Some(entry) => entries.push(entry),
-            None => skipped += 1,
+    let mut found = false;
+    for (name, make) in kinds {
+        let mut items = Vec::new();
+        root.find_all(name, &mut items);
+        found |= !items.is_empty();
+        for item in items {
+            match (!flag(item, "trashed", bytes)).then(|| make(item, bytes)).flatten() {
+                Some(entry) => entries.push(entry),
+                None => skipped += 1,
+            }
         }
     }
+    if !found {
+        return Err(VaultError::InvalidImport);
+    }
     Ok(Imported { format: Format::Secrets, entries, skipped })
+}
+
+/// Fields as they are collected: a value is moved in, not copied, and `Field` zeroes it from
+/// there on; an empty one is dropped.
+#[derive(Default)]
+struct Fields(Vec<Field>);
+
+impl Fields {
+    fn add(&mut self, name: &str, mut value: Zeroizing<Vec<u8>>, concealed: bool, custom: bool) {
+        if !value.is_empty() {
+            self.0.push(Field { name: name.into(), value: std::mem::take(&mut *value), concealed, custom });
+        }
+    }
+
+    /// Whatever else the item holds, under its element name; then its tags and `archived`.
+    fn add_rest(&mut self, item: &Element, known: &[&str], bytes: &[u8]) {
+        for other in &item.children {
+            let name = other.name.as_str();
+            if !known.contains(&name) && name != "tags" && !BOOKKEEPING.contains(&name) {
+                self.add(name, trimmed(&other.text(bytes)), true, true);
+            }
+        }
+        // A tag is an element of its own: `<tag><name>work</name><uuid>…</uuid>…</tag>`.
+        for tag in item.child("tags").into_iter().flat_map(|tags| tags.children.iter()) {
+            let name = tag.child("name").map_or_else(|| tag.text(bytes), |name| name.text(bytes));
+            self.add(field::TAG, trimmed(&name), false, false);
+        }
+        if flag(item, "archived", bytes) {
+            self.add(field::TAG, Zeroizing::new(b"archived".to_vec()), false, false);
+        }
+    }
+
+    fn has_content(&self) -> bool {
+        self.0.iter().any(|field| field.name != field::TAG)
+    }
+}
+
+fn text(item: &Element, name: &str, bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    item.child(name).map(|child| trimmed(&child.text(bytes))).unwrap_or_default()
+}
+
+fn title(value: &[u8]) -> String {
+    String::from_utf8_lossy(value).into_owned()
+}
+
+/// A card in the order the app saves one: holder, number (digits only), expiry (`MM/YY`), CVV,
+/// notes. `None` with neither a name nor a number.
+fn card(item: &Element, bytes: &[u8]) -> Option<NewEntry> {
+    let mut fields = Fields::default();
+    fields.add(field::CARDHOLDER, text(item, "cardholder", bytes), false, false);
+    let pan = text(item, "pan", bytes);
+    let mut digits = Zeroizing::new(pan.iter().copied().filter(u8::is_ascii_digit).collect::<Vec<u8>>());
+    if digits.is_empty() {
+        digits = pan;
+    }
+    fields.add(field::NUMBER, digits, true, false);
+    fields.add(field::EXPIRY, expiry(&text(item, "expirationDate", bytes)), false, false);
+    fields.add(field::CVV, text(item, "securityCode", bytes), true, false);
+    fields.add(field::NOTES, text(item, "notes", bytes), true, false);
+    fields.add_rest(item, &["name", "cardholder", "pan", "expirationDate", "securityCode", "notes"], bytes);
+    let mut name = title(&text(item, "name", bytes));
+    if name.is_empty() {
+        name = title(&text(item, "brand", bytes));
+    }
+    (!name.is_empty() && fields.has_content()).then_some(NewEntry {
+        kind: EntryKind::Card,
+        title: name,
+        fields: fields.0,
+    })
+}
+
+/// `2029-05-31T23:59:59.000Z` → `05/29`; anything else as it is.
+fn expiry(date: &[u8]) -> Zeroizing<Vec<u8>> {
+    let numeric =
+        |range: std::ops::Range<usize>| date.get(range).filter(|part| part.iter().all(u8::is_ascii_digit));
+    match (numeric(0..4), date.get(4), numeric(5..7)) {
+        (Some(year), Some(b'-'), Some(month)) => {
+            let mut short = Zeroizing::new(Vec::with_capacity(5));
+            short.extend_from_slice(month);
+            short.push(b'/');
+            short.extend_from_slice(&year[2..]);
+            short
+        }
+        _ => Zeroizing::new(date.to_vec()),
+    }
+}
+
+/// A secure note: its text, concealed like any note; kept with only a title too.
+fn note(item: &Element, bytes: &[u8]) -> Option<NewEntry> {
+    let mut fields = Fields::default();
+    fields.add(field::NOTES, text(item, "text", bytes), true, false);
+    fields.add_rest(item, &["title", "text"], bytes);
+    let name = title(&text(item, "title", bytes));
+    (!name.is_empty()).then_some(NewEntry { kind: EntryKind::Note, title: name, fields: fields.0 })
 }
 
 fn flag(element: &Element, name: &str, bytes: &[u8]) -> bool {
     element.child(name).is_some_and(|child| trimmed(&child.text(bytes)).as_slice() == b"1")
 }
 
-/// One item, in the order the app saves a login; `None` for one in the trash or with nothing.
-fn entry(credential: &Element, bytes: &[u8]) -> Option<NewEntry> {
-    if flag(credential, "trashed", bytes) {
-        return None;
-    }
-    let text =
-        |name: &str| credential.child(name).map(|child| trimmed(&child.text(bytes))).unwrap_or_default();
-    let mut fields = Vec::new();
-    let mut add = |name: &str, mut value: Zeroizing<Vec<u8>>, concealed: bool, custom: bool| {
-        if !value.is_empty() {
-            // Moved, not copied: `Field` zeroes it from here on.
-            fields.push(Field { name: name.into(), value: std::mem::take(&mut *value), concealed, custom });
-        }
+/// A login, in the order the app saves one; `None` with nothing in it.
+fn login(credential: &Element, bytes: &[u8]) -> Option<NewEntry> {
+    let text = |name: &str| text(credential, name, bytes);
+    let mut fields = Fields::default();
+    let mut add = |name: &str, value: Zeroizing<Vec<u8>>, concealed: bool, custom: bool| {
+        fields.add(name, value, concealed, custom);
     };
 
     let username = text("identifier");
@@ -107,33 +211,22 @@ fn entry(credential: &Element, bytes: &[u8]) -> Option<NewEntry> {
     for (name, value) in extra {
         add(name, value, true, true);
     }
-    // Whatever else the item holds, under its element name.
-    let known =
-        ["name", "identifier", "secrets", "services", "notes", "tags", "oneTimePassword", "oneTimePasswords"];
-    for other in &credential.children {
-        if !known.contains(&other.name.as_str()) && !BOOKKEEPING.contains(&other.name.as_str()) {
-            add(&other.name, trimmed(&other.text(bytes)), true, true);
-        }
-    }
-    if let Some(tags) = credential.child("tags") {
-        for tag in &tags.children {
-            add(field::TAG, trimmed(&tag.text(bytes)), false, false);
-        }
-    }
-    if flag(credential, "archived", bytes) {
-        add(field::TAG, Zeroizing::new(b"archived".to_vec()), false, false);
-    }
+    let known = ["name", "identifier", "secrets", "services", "notes", "oneTimePassword", "oneTimePasswords"];
+    fields.add_rest(credential, &known, bytes);
 
-    let name = String::from_utf8_lossy(&text("name")).into_owned();
+    let name = title(&text("name"));
     let title = if !name.is_empty() {
         name
     } else if let Some(host) = first_host {
         host
     } else {
-        String::from_utf8_lossy(&username).into_owned()
+        title(&username)
     };
-    let has_content = fields.iter().any(|field| field.name != field::TAG);
-    (!title.is_empty() && has_content).then_some(NewEntry { kind: EntryKind::Login, title, fields })
+    (!title.is_empty() && fields.has_content()).then_some(NewEntry {
+        kind: EntryKind::Login,
+        title,
+        fields: fields.0,
+    })
 }
 
 /// The item's one-time code as the app stores it: the seed in base32, or an `otpauth://` link
