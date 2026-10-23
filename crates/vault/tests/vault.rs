@@ -312,6 +312,29 @@ fn using_an_entry_is_noted_without_changing_it() {
 }
 
 #[test]
+fn a_favourite_is_kept_without_changing_the_entry() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let starred = vault.add_entry(login("GitLab", "pw"));
+    let other = vault.add_entry(login("Other", "pw2"));
+    let updated = vault.entries()[0].updated_at;
+    assert!(!vault.entries()[0].favorite);
+
+    vault.set_favorite(&starred, true).unwrap();
+    let mut reopened = open(&vault.to_bytes()).unwrap();
+    let summary = reopened.entries().iter().find(|e| e.id == starred).unwrap();
+    assert!(summary.favorite);
+    assert_eq!(summary.updated_at, updated);
+    assert!(!reopened.entries().iter().find(|e| e.id == other).unwrap().favorite);
+
+    // An edit keeps the star; taking it off stores the entry as before.
+    reopened.update_entry(&starred, login("GitLab", "new")).unwrap();
+    assert!(reopened.entries().iter().find(|e| e.id == starred).unwrap().favorite);
+    reopened.set_favorite(&starred, false).unwrap();
+    assert!(!open(&reopened.to_bytes()).unwrap().entries().iter().any(|e| e.favorite));
+    assert_eq!(vault.set_favorite(&[9; 16], true).err(), Some(VaultError::NotFound));
+}
+
+#[test]
 fn a_deleted_entry_leaves_a_tombstone() {
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
     let gone = vault.add_entry(login("Gone", "x"));
@@ -377,6 +400,39 @@ fn a_device_slot_opens_its_own_vault_only() {
     assert_eq!(Vault::open_with_device_key(&file, &slot, &[0x42; 31]).err(), Some(VaultError::InvalidKey));
     assert_eq!(Vault::open_with_device_key(&file, &slot[1..], &kek).err(), Some(VaultError::InvalidKey));
     assert_eq!(vault.device_slot(&[1; 16]).err(), Some(VaultError::InvalidKey));
+}
+
+#[test]
+fn a_new_master_password_opens_the_vault_and_the_old_one_does_not() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let id = vault.add_entry(login("Example", "s3cret"));
+    let kek = [0x42; 32];
+    let slot = vault.device_slot(&kek).unwrap();
+    let before = vault.to_bytes();
+
+    vault.change_password(PASSWORD, b"new master password").unwrap();
+    let file = vault.to_bytes();
+    assert_eq!(open(&file).err(), Some(VaultError::WrongPassword));
+    let opened = Vault::open(&file, b"new master password").unwrap();
+    assert_eq!(opened.secret(&id, field::PASSWORD).unwrap().expose(), b"s3cret");
+    assert_eq!(opened.vault_id(), vault.vault_id());
+    assert_eq!(opened.kdf_params(), PARAMS);
+    // The vault key stays: Touch ID keeps working, and a copy made before opens as it did.
+    assert_eq!(Vault::open_with_device_key(&file, &slot, &kek).unwrap().entries().len(), 1);
+    assert!(open(&before).is_ok());
+    // No entry was sealed again.
+    assert_eq!(layout(&file)[2].len(), layout(&before)[2].len());
+    assert_eq!(&file[layout(&file)[2].clone()], &before[layout(&before)[2].clone()]);
+}
+
+#[test]
+fn the_master_password_changes_only_with_the_current_one() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    vault.add_entry(login("Example", "s3cret"));
+    let before = vault.to_bytes();
+    assert_eq!(vault.change_password(b"not it", b"new").err(), Some(VaultError::WrongPassword));
+    assert_eq!(vault.to_bytes(), before);
+    assert!(open(&vault.to_bytes()).is_ok());
 }
 
 #[test]

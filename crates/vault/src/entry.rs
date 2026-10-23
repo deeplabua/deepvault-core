@@ -99,6 +99,10 @@ pub(crate) struct Entry {
     /// was before.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub used_at: u64,
+    /// Starred by the user (`Vault::set_favorite`). Left out while false, so such an entry is
+    /// stored as it was before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub favorite: bool,
     pub deleted: bool,
 }
 
@@ -152,6 +156,7 @@ pub struct EntrySummary {
     pub updated_at: u64,
     /// 0: never used.
     pub used_at: u64,
+    pub favorite: bool,
 }
 
 impl EntrySummary {
@@ -191,6 +196,7 @@ impl EntrySummary {
             created_at: entry.created_at,
             updated_at: entry.updated_at,
             used_at: entry.used_at,
+            favorite: entry.favorite,
         }
     }
 }

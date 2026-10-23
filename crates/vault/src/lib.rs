@@ -49,6 +49,7 @@ pub mod testing {
             created_at,
             updated_at,
             used_at: 0,
+            favorite: false,
             deleted: false,
         };
         entry.to_cbor().to_vec()

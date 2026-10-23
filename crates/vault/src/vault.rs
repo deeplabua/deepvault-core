@@ -125,6 +125,59 @@ impl Vault {
         format::write(&self.header, &self.blocks, &self.keys)
     }
 
+    /// Replaces the master password (PRD 04: one slot rewritten, no entry). `current` must open
+    /// a password slot of this vault — the vault being unlocked is not enough, so a Mac left
+    /// unlocked does not give the password away. The vault key stays: entries, recovery slots and
+    /// device slots (Touch ID) are untouched. Every password slot gives way to one new slot under
+    /// a fresh salt; the KDF parameters stay. Runs the KDF twice. Randomness: salt (16), nonce (24).
+    ///
+    /// Copies of the file made before still open with the old password: they hold the same vault
+    /// key under the old slot.
+    pub fn change_password(&mut self, current: &[u8], new: &[u8]) -> Result<()> {
+        let params = self.kdf_params();
+        let kek = kdf::derive_kek(current, &self.header.kdf.salt, params)?;
+        let opens =
+            self.header.slots.iter().filter(|slot| slot.kind == SlotKind::Password.label()).any(|slot| {
+                keys::unwrap_vk(
+                    &kek,
+                    &slot.wrapped_vk,
+                    &slot.nonce,
+                    SlotKind::Password,
+                    &self.header.vault_id,
+                )
+                .is_some()
+            });
+        if !opens {
+            return Err(VaultError::WrongPassword);
+        }
+
+        let mut salt = [0; SALT_LEN];
+        self.entropy.fill(&mut salt);
+        let mut nonce = [0; NONCE_LEN];
+        self.entropy.fill(&mut nonce);
+        let kek = kdf::derive_kek(new, &salt, params)?;
+        let wrapped_vk = keys::wrap_vk(&kek, &self.vk, &nonce, SlotKind::Password, &self.header.vault_id);
+        self.header.slots.retain(|slot| slot.kind != SlotKind::Password.label());
+        self.header
+            .slots
+            .insert(0, SlotHeader { kind: SlotKind::Password.label().into(), nonce, wrapped_vk });
+        self.header.kdf.salt = salt;
+        Ok(())
+    }
+
+    /// Marks a live entry as a favourite or not. Not a change of its content: `updated_at`
+    /// stays, as with `mark_used`. Randomness: nonce (24).
+    pub fn set_favorite(&mut self, id: &[u8; ENTRY_ID_LEN], favorite: bool) -> Result<()> {
+        let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(id)?;
+        let mut entry =
+            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        entry.favorite = favorite;
+        self.index[position] = EntrySummary::new(*id, &entry);
+        self.blocks[block] = self.seal(*id, &entry);
+        Ok(())
+    }
+
     /// Wraps the vault key for Touch ID: `kek` is the 32-byte key the app derives through the
     /// Secure Enclave. The slot is kept in the Keychain, not in the file.
     pub fn device_slot(&mut self, kek: &[u8]) -> Result<Vec<u8>> {
@@ -157,6 +210,7 @@ impl Vault {
             created_at: now,
             updated_at: now,
             used_at: 0,
+            favorite: false,
             deleted: false,
         };
         self.index.push(EntrySummary::new(id, &entry));
@@ -234,6 +288,7 @@ impl Vault {
             created_at: old.created_at,
             updated_at: self.entropy.now(),
             used_at: 0,
+            favorite: false,
             deleted: true,
         };
         self.blocks[block] = self.seal(*id, &tombstone);
@@ -255,6 +310,7 @@ impl Vault {
             created_at: old.created_at,
             updated_at: self.entropy.now().max(old.updated_at),
             used_at: old.used_at,
+            favorite: old.favorite,
             deleted: false,
         };
         self.index[position] = EntrySummary::new(*id, &entry);
