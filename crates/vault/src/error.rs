@@ -22,6 +22,8 @@ pub enum VaultError {
     InvalidOtp,
     /// Generator options out of range: length, word count, a letter as separator.
     InvalidGeneratorOptions,
+    /// An import file that is neither CSV nor Secrets' XML, or has nothing a password export has.
+    InvalidImport,
 }
 
 impl fmt::Display for VaultError {
@@ -35,6 +37,7 @@ impl fmt::Display for VaultError {
             Self::NotFound => f.write_str("no such entry or field"),
             Self::InvalidOtp => f.write_str("not a TOTP secret or otpauth URI"),
             Self::InvalidGeneratorOptions => f.write_str("generator options out of range"),
+            Self::InvalidImport => f.write_str("not a password export"),
         }
     }
 }

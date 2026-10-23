@@ -155,6 +155,7 @@ impl Vault {
             fields: new.fields,
             created_at: now,
             updated_at: now,
+            used_at: 0,
             deleted: false,
         };
         self.index.push(EntrySummary::new(id, &entry));
@@ -175,6 +176,7 @@ impl Vault {
             fields: Vec::new(),
             created_at: old.created_at,
             updated_at: self.entropy.now(),
+            used_at: 0,
             deleted: true,
         };
         self.blocks[block] = self.seal(*id, &tombstone);
@@ -195,8 +197,23 @@ impl Vault {
             fields: new.fields,
             created_at: old.created_at,
             updated_at: self.entropy.now().max(old.updated_at),
+            used_at: old.used_at,
             deleted: false,
         };
+        self.index[position] = EntrySummary::new(*id, &entry);
+        self.blocks[block] = self.seal(*id, &entry);
+        Ok(())
+    }
+
+    /// Notes that a live entry was used now (a value copied, its site opened), for «Recently
+    /// Used». Its content and `updated_at` stay; it is sealed again under a fresh nonce.
+    /// Randomness: nonce (24).
+    pub fn mark_used(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+        let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(id)?;
+        let mut entry =
+            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        entry.used_at = self.entropy.now().max(entry.used_at);
         self.index[position] = EntrySummary::new(*id, &entry);
         self.blocks[block] = self.seal(*id, &entry);
         Ok(())

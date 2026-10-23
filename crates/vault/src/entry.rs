@@ -72,6 +72,10 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// An entry as the app hands it in.
 pub struct NewEntry {
     pub kind: EntryKind,
@@ -90,6 +94,11 @@ pub(crate) struct Entry {
     pub fields: Vec<Field>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// When a value of it was last copied or its site opened (`Vault::mark_used`); not a
+    /// change, so not `updated_at`. Left out while 0 (never), so such an entry is stored as it
+    /// was before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub used_at: u64,
     pub deleted: bool,
 }
 
@@ -141,6 +150,8 @@ pub struct EntrySummary {
     pub card_network: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// 0: never used.
+    pub used_at: u64,
 }
 
 impl EntrySummary {
@@ -179,6 +190,7 @@ impl EntrySummary {
                 .collect(),
             created_at: entry.created_at,
             updated_at: entry.updated_at,
+            used_at: entry.used_at,
         }
     }
 }

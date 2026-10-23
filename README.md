@@ -34,9 +34,15 @@ title and an ordered list of named fields, each visible or concealed. Names the 
 `username`, `password`, `totp`, `url`, `notes`, `tag`, `icon`, `link` (another entry's id), a card's, a bank account's and a
 licence's (`crates/vault/src/entry.rs`); a name may repeat (several sites, notes, tags). A field
 marked `custom` is one the user named: its name is only a label (the flag is left out when false,
-so such fields are stored exactly as before). The index kept
+so such fields are stored exactly as before). Besides its creation and change dates an entry
+keeps `used_at`, when a value was last copied or its site opened (left out while never). The
+index kept
 in memory while unlocked holds only visible values: title, first site and user name, tags, the
 picture, whether there is a one-time code. Concealed values are decrypted one field at a time.
+
+Imports (`crates/vault/src/import/`): CSV exports of 1Password, Bitwarden, Apple Passwords,
+Chrome and Firefox, and the XML export of Secrets, parsed by hand (no dependency) straight into
+zeroed-on-drop fields.
 
 One-time codes (RFC 6238, `crates/vault/src/totp.rs`) are computed in the core from an
 `otpauth://totp/…` link or a base32 setup key: the app gets the code, never the secret.
@@ -75,7 +81,7 @@ in ADR-0001; a new one needs an ADR.
 
 ```toml
 [dependencies]
-deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.4.0" }
+deepvault-vault = { git = "https://github.com/deeplabua/deepvault-core", tag = "v0.5.0" }
 ```
 
 ## License

@@ -16,6 +16,7 @@ mod entry;
 mod error;
 mod format;
 pub mod generator;
+pub mod import;
 pub mod kdf;
 pub mod keys;
 mod secret;
@@ -47,6 +48,7 @@ pub mod testing {
             fields: new.fields,
             created_at,
             updated_at,
+            used_at: 0,
             deleted: false,
         };
         entry.to_cbor().to_vec()

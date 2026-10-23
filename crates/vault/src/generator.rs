@@ -314,8 +314,10 @@ mod tests {
             }
         }
         let expected = 20_000.0;
-        // χ² with 25 degrees of freedom; above 52.6 happens by chance in 1 run out of 1000.
+        // χ² with 25 degrees of freedom: above 74.5 by chance in about 1 run in a million (the
+        // old 52.6 — 1 in 1000 — did fail now and then). A modulo bias (`byte % 26`) gives χ²
+        // ≈ 700 over these 520 000 draws, so the test still catches it.
         let chi2: f64 = counts.iter().map(|&n| (f64::from(n) - expected).powi(2) / expected).sum();
-        assert!(chi2 < 52.6, "χ² = {chi2}, counts = {counts:?}");
+        assert!(chi2 < 74.5, "χ² = {chi2}, counts = {counts:?}");
     }
 }

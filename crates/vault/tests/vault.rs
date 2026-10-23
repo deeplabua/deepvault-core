@@ -294,6 +294,24 @@ fn links_are_in_the_index() {
 }
 
 #[test]
+fn using_an_entry_is_noted_without_changing_it() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let used = vault.add_entry(login("GitLab", "pw"));
+    let other = vault.add_entry(login("Other", "pw2"));
+    let updated = vault.entries()[0].updated_at;
+    assert_eq!(vault.entries()[0].used_at, 0);
+
+    vault.mark_used(&used).unwrap();
+    let reopened = open(&vault.to_bytes()).unwrap();
+    let summary = reopened.entries().iter().find(|e| e.id == used).unwrap();
+    assert!(summary.used_at >= updated);
+    assert_eq!(summary.updated_at, updated);
+    assert_eq!(reopened.secret(&used, field::PASSWORD).unwrap().expose(), b"pw");
+    assert_eq!(reopened.entries().iter().find(|e| e.id == other).unwrap().used_at, 0);
+    assert_eq!(vault.mark_used(&[9; 16]).err(), Some(VaultError::NotFound));
+}
+
+#[test]
 fn a_deleted_entry_leaves_a_tombstone() {
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
     let gone = vault.add_entry(login("Gone", "x"));
