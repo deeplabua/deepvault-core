@@ -23,6 +23,8 @@ sha2 = { version = "0.11", default-features = false }
 sha1 = { version = "0.11", default-features = false }
 zeroize = { version = "1.9", features = ["derive"] }
 getrandom = "0.4"
+# SSH ed25519 keys for the agent (ADR-0006): signing only, keys made from our own randomness.
+ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 ciborium = "0.2"
 serde_json = "1"

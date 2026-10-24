@@ -24,6 +24,12 @@ pub enum VaultError {
     InvalidGeneratorOptions,
     /// An import file that is neither CSV nor Secrets' XML, or has nothing a password export has.
     InvalidImport,
+    /// Not an OpenSSH private key (`-----BEGIN OPENSSH PRIVATE KEY-----`).
+    InvalidSshKey,
+    /// An SSH key protected by a passphrase: remove it first (`ssh-keygen -p -N ""`).
+    EncryptedSshKey,
+    /// An SSH key of a type the agent does not take (RSA, ECDSA from a file).
+    UnsupportedSshKey,
 }
 
 impl fmt::Display for VaultError {
@@ -38,6 +44,9 @@ impl fmt::Display for VaultError {
             Self::InvalidOtp => f.write_str("not a TOTP secret or otpauth URI"),
             Self::InvalidGeneratorOptions => f.write_str("generator options out of range"),
             Self::InvalidImport => f.write_str("not a password export"),
+            Self::InvalidSshKey => f.write_str("not an OpenSSH private key"),
+            Self::EncryptedSshKey => f.write_str("the SSH key has a passphrase"),
+            Self::UnsupportedSshKey => f.write_str("only ed25519 SSH keys are taken"),
         }
     }
 }

@@ -40,10 +40,14 @@ pub mod field {
     /// A variable of an `environment` entry given to every new shell without asking (ADR-0005,
     /// «Завжди в шелі»): the variable's name, repeated for several; not concealed.
     pub const SHELL: &str = "shell";
+    /// An SSH key's private half, `openssh-key-v1` unencrypted (concealed; ADR-0006).
+    pub const SSH_PRIVATE_KEY: &str = "ssh_private_key";
+    /// An SSH key's public line, `ssh-ed25519 AAAA… comment` (not concealed).
+    pub const SSH_PUBLIC_KEY: &str = "ssh_public_key";
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
-/// `software_license`, `environment`).
+/// `software_license`, `environment`, `ssh_key`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -56,6 +60,8 @@ pub enum EntryKind {
     Password,
     /// Environment variables (ADR-0005): custom fields named `KEY`, for `deepvault run` / `env`.
     Environment,
+    /// An SSH key for the agent (ADR-0006): `ssh_private_key`, `ssh_public_key`.
+    SshKey,
 }
 
 /// One named value. `concealed` values (passwords, notes, card numbers) stay out of the index

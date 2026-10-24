@@ -20,6 +20,7 @@ pub mod import;
 pub mod kdf;
 pub mod keys;
 mod secret;
+pub mod ssh;
 pub mod strength;
 pub mod totp;
 mod vault;
