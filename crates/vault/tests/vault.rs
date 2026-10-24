@@ -213,6 +213,7 @@ fn every_kind_is_stored_by_name_and_survives_reopening() {
         (EntryKind::Card, "card"),
         (EntryKind::BankAccount, "bank_account"),
         (EntryKind::SoftwareLicense, "software_license"),
+        (EntryKind::Environment, "environment"),
     ];
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
     for (kind, name) in kinds {
@@ -230,6 +231,44 @@ fn every_kind_is_stored_by_name_and_survives_reopening() {
     let mut expected: Vec<_> = kinds.iter().map(|(kind, name)| (name.to_string(), *kind)).collect();
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(stored, expected);
+}
+
+#[test]
+fn environment_variables_keep_their_names_values_and_shell_marks() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let variable = |name: &str, value: &[u8]| Field {
+        name: name.into(),
+        value: value.to_vec(),
+        concealed: true,
+        custom: true,
+    };
+    let id = vault.add_entry(NewEntry {
+        kind: EntryKind::Environment,
+        title: "Apple".into(),
+        fields: vec![
+            variable("APPLE_TEAM_ID", b"ECMW794735"),
+            variable("APPLE_APP_PASSWORD", b"abcd-efgh-ijkl-mnop"),
+            // Only the team id goes to every new shell; the password asks each time.
+            Field {
+                name: field::SHELL.into(),
+                value: b"APPLE_TEAM_ID".to_vec(),
+                concealed: false,
+                custom: false,
+            },
+        ],
+    });
+
+    let reopened = open(&vault.to_bytes()).unwrap();
+    assert_eq!(reopened.entries()[0].kind, EntryKind::Environment);
+    let fields = reopened.fields(&id).unwrap();
+    let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["APPLE_TEAM_ID", "APPLE_APP_PASSWORD", field::SHELL]);
+    // Values stay concealed in the list; the mark is a name, readable without decrypting a value.
+    assert!(fields[0].value.is_none() && fields[1].value.is_none());
+    assert_eq!(fields[2].value.as_deref(), Some("APPLE_TEAM_ID"));
+    assert_eq!(reopened.secret_at(&id, 0).unwrap().expose(), b"ECMW794735");
+    // A variable named like a known field is still only a label.
+    assert_eq!(reopened.secret(&id, field::PASSWORD).err(), Some(VaultError::NotFound));
 }
 
 #[test]

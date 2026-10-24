@@ -37,10 +37,13 @@ pub mod field {
     /// Another entry this one is linked to, by its id as 32 lowercase hex digits (repeated for
     /// several, not concealed: it is in the index, so the other entry can show the link back).
     pub const LINK: &str = "link";
+    /// A variable of an `environment` entry given to every new shell without asking (ADR-0005,
+    /// «Завжди в шелі»): the variable's name, repeated for several; not concealed.
+    pub const SHELL: &str = "shell";
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
-/// `software_license`).
+/// `software_license`, `environment`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -51,6 +54,8 @@ pub enum EntryKind {
     SoftwareLicense,
     /// A password alone: an archive's, a router's, an app-specific one.
     Password,
+    /// Environment variables (ADR-0005): custom fields named `KEY`, for `deepvault run` / `env`.
+    Environment,
 }
 
 /// One named value. `concealed` values (passwords, notes, card numbers) stay out of the index
