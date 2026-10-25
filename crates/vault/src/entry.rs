@@ -47,7 +47,7 @@ pub mod field {
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
-/// `software_license`, `environment`, `ssh_key`).
+/// `software_license`, `environment`, `ssh_key`, `generated_password`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -62,6 +62,9 @@ pub enum EntryKind {
     Environment,
     /// An SSH key for the agent (ADR-0006): `ssh_private_key`, `ssh_public_key`.
     SshKey,
+    /// A password the generator made and the user copied, kept so it can be found later (with
+    /// `password`, as a `password` entry has).
+    GeneratedPassword,
 }
 
 /// One named value. `concealed` values (passwords, notes, card numbers) stay out of the index

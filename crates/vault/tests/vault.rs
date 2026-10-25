@@ -215,6 +215,7 @@ fn every_kind_is_stored_by_name_and_survives_reopening() {
         (EntryKind::SoftwareLicense, "software_license"),
         (EntryKind::Environment, "environment"),
         (EntryKind::SshKey, "ssh_key"),
+        (EntryKind::GeneratedPassword, "generated_password"),
     ];
     let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
     for (kind, name) in kinds {

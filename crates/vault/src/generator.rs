@@ -166,7 +166,7 @@ pub fn passphrase(entropy: &mut dyn Entropy, options: PassphraseOptions) -> Resu
 }
 
 pub fn pin(entropy: &mut dyn Entropy, length: u32) -> Result<Generated> {
-    if !(4..=12).contains(&length) {
+    if !(4..=20).contains(&length) {
         return Err(VaultError::InvalidGeneratorOptions);
     }
     let mut text = Zeroizing::new(String::with_capacity(length as usize));
@@ -292,6 +292,8 @@ mod tests {
         let letter = PassphraseOptions { separator: 'a', ..Default::default() };
         assert_eq!(passphrase(&mut entropy, letter).err(), Some(VaultError::InvalidGeneratorOptions));
         assert_eq!(pin(&mut entropy, 3).err(), Some(VaultError::InvalidGeneratorOptions));
+        assert_eq!(pin(&mut entropy, 21).err(), Some(VaultError::InvalidGeneratorOptions));
+        assert_eq!(pin(&mut entropy, 20).unwrap().text.len(), 20);
     }
 
     /// Every symbol of a small alphabet comes up about equally often: a `%` without rejection
