@@ -11,6 +11,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::entropy::Entropy;
 use crate::error::{Result, VaultError};
 use crate::format::cbor_bytes;
+use crate::ssh::{base64_decode, base64_encode};
 
 /// DeepVault's authenticator id in registrations: sites show «DeepVault» when it is listed in
 /// the passkey authenticator AAGUID list. Constant for every passkey DeepVault makes.
@@ -98,6 +99,53 @@ impl Passkey {
         SigningKey::from_slice(&self.key).map_err(|_| VaultError::Corrupted)
     }
 
+    /// A passkey another manager made (KeePassXC, Apple's Passwords): its key from PKCS#8.
+    /// `None` when the key is not a P-256 key.
+    pub fn imported(
+        rp_id: &str,
+        credential_id: &[u8],
+        user_handle: &[u8],
+        user_name: &str,
+        user_display: &str,
+        pkcs8: &[u8],
+        created: u64,
+    ) -> Option<Self> {
+        let key = scalar_from_pkcs8(pkcs8)?;
+        Some(Passkey {
+            rp_id: rp_id.into(),
+            credential_id: credential_id.to_vec(),
+            user_handle: user_handle.to_vec(),
+            user_name: user_name.into(),
+            user_display: user_display.into(),
+            key: key.to_vec(),
+            created,
+        })
+    }
+
+    /// The private key as PKCS#8 DER (with its public key), for an export that carries
+    /// passkeys — KeePassXC's `KPEX_PASSKEY_PRIVATE_KEY_PEM`.
+    pub fn pkcs8(&self) -> Result<Zeroizing<Vec<u8>>> {
+        let point = self.signing_key()?.verifying_key().to_sec1_point(false);
+        let mut out = Zeroizing::new(PKCS8_HEAD.to_vec());
+        out.extend_from_slice(&self.key);
+        out.extend_from_slice(&[0xA1, 0x44, 0x03, 0x42, 0x00]);
+        out.extend_from_slice(point.as_bytes());
+        Ok(out)
+    }
+
+    /// The private key as a PEM `PRIVATE KEY` block.
+    pub fn pem(&self) -> Result<Zeroizing<String>> {
+        let der = self.pkcs8()?;
+        let body = Zeroizing::new(base64_encode(&der));
+        let mut out = Zeroizing::new(String::from("-----BEGIN PRIVATE KEY-----\n"));
+        for line in body.as_bytes().chunks(64) {
+            out.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
+            out.push('\n');
+        }
+        out.push_str("-----END PRIVATE KEY-----\n");
+        Ok(out)
+    }
+
     /// The public key as COSE_Key (EC2, ES256, P-256).
     pub fn cose_public_key(&self) -> Result<Vec<u8>> {
         let point = self.signing_key()?.verifying_key().to_sec1_point(false);
@@ -174,4 +222,46 @@ fn der(signature: &Signature) -> Vec<u8> {
     out.extend_from_slice(&r);
     out.extend_from_slice(&s);
     out
+}
+
+/// PKCS#8 for a P-256 key up to its 32 bytes: `SEQUENCE { 0, { ecPublicKey, prime256v1 },
+/// OCTET STRING { ECPrivateKey: SEQUENCE { 1, OCTET STRING (32) … } } }`.
+const PKCS8_HEAD: [u8; 36] = [
+    0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
+    0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x04, 0x6D, 0x30, 0x6B, 0x02, 0x01, 0x01,
+    0x04, 0x20,
+];
+
+/// The P-256 OID, `1.2.840.10045.3.1.7`.
+const PRIME256V1: [u8; 10] = [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
+
+/// The 32-byte scalar out of a P-256 key's PKCS#8 (or a bare SEC1 `ECPrivateKey`): the octet
+/// string after the version `1` of the `ECPrivateKey`, checked as a scalar on the curve.
+fn scalar_from_pkcs8(der: &[u8]) -> Option<Zeroizing<[u8; 32]>> {
+    if der.first() != Some(&0x30) {
+        return None;
+    }
+    let is_p256 = der.windows(PRIME256V1.len()).any(|w| w == PRIME256V1);
+    let at = der.windows(5).position(|w| w == [0x02, 0x01, 0x01, 0x04, 0x20])? + 5;
+    let bytes = der.get(at..at + 32)?;
+    let mut key = Zeroizing::new([0u8; 32]);
+    key.copy_from_slice(bytes);
+    (is_p256 && SigningKey::from_slice(key.as_ref()).is_ok()).then_some(key)
+}
+
+/// PEM (`-----BEGIN PRIVATE KEY-----` …) to DER.
+pub fn pem_to_der(pem: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let body: Zeroizing<String> = Zeroizing::new(
+        pem.lines().filter(|l| !l.starts_with("-----")).flat_map(|l| l.trim().chars()).collect(),
+    );
+    base64_decode(&body).map(Zeroizing::new)
+}
+
+/// Base64url without padding, as WebAuthn ids are written.
+pub fn base64url_encode(bytes: &[u8]) -> String {
+    base64_encode(bytes).trim_end_matches('=').replace('+', "-").replace('/', "_")
+}
+
+pub fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    base64_decode(&text.trim().replace('-', "+").replace('_', "/"))
 }

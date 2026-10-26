@@ -199,6 +199,57 @@ fn writes_an_export_for_keepass() {
             },
         ],
     });
+    vault.passkey_register(None, "webauthn.io", b"user-handle-1", "pass_test", "Pass Test").unwrap();
     let file = vault.export_kdbx(&Key { password: Some(PASSWORD), key_file: None }).unwrap();
     std::fs::write(path, file).unwrap();
+}
+
+/// A KeePassXC passkey (`KPEX_PASSKEY_*`, its key a PKCS#8 PEM by `cryptography`) comes in as a
+/// passkey that signs with that key.
+#[test]
+fn a_keepassxc_passkey_comes_in_and_signs() {
+    use p256::ecdsa::signature::Verifier;
+    use p256::ecdsa::{DerSignature, SigningKey};
+
+    let imported = kdbx::read(&fixture("v4-passkey.kdbx"), &key()).unwrap();
+    let entry = imported.entries.iter().find(|e| e.title == "webauthn.io").unwrap();
+    assert!(values(entry, "KPEX_PASSKEY_RELYING_PARTY").is_empty(), "no raw KPEX strings");
+    let mut vault = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
+    vault.import(imported.entries).unwrap();
+
+    let passkeys = vault.passkeys(Some("webauthn.io"));
+    assert_eq!(passkeys.len(), 1);
+    assert_eq!(passkeys[0].credential_id, (0u8..16).collect::<Vec<_>>());
+    assert_eq!(passkeys[0].user_handle, b"user-handle-1");
+    assert_eq!(passkeys[0].user_name, "pass_test");
+    let hash = [9u8; 32];
+    let (_, assertion) = vault.passkey_assert("webauthn.io", &passkeys[0].credential_id, &hash).unwrap();
+    let public = *SigningKey::from_slice(&[0x11; 32]).unwrap().verifying_key();
+    let mut signed = assertion.authenticator_data.clone();
+    signed.extend_from_slice(&hash);
+    public.verify(&signed, &DerSignature::try_from(&assertion.signature[..]).unwrap()).unwrap();
+}
+
+/// Passkeys go out as KeePassXC's strings — the first in its login, another in an entry of its
+/// own — and come back signing as before.
+#[test]
+fn passkeys_go_out_and_come_back() {
+    let mut vault = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
+    let (login, first) = vault.passkey_register(None, "github.com", b"h1", "alex", "Alex").unwrap();
+    let (_, second) =
+        vault.passkey_register(Some(&login), "github.com", b"h2", "deeplab", "DeepLab").unwrap();
+    let file = vault.export_kdbx(&key()).unwrap();
+    let imported = kdbx::read(&file, &key()).unwrap();
+    assert_eq!(imported.entries.len(), 2);
+    assert!(imported.entries.iter().any(|e| e.title == "github.com (deeplab)"));
+
+    let mut back = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
+    back.import(imported.entries).unwrap();
+    let hash = [3u8; 32];
+    for id in [&first.credential_id, &second.credential_id] {
+        let (_, a) = vault.passkey_assert("github.com", id, &hash).unwrap();
+        let (info, b) = back.passkey_assert("github.com", id, &hash).unwrap();
+        assert_eq!(a.signature, b.signature, "the same key (RFC 6979)");
+        assert!(!info.user_handle.is_empty());
+    }
 }

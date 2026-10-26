@@ -269,3 +269,31 @@ fn xml_that_is_not_a_secrets_export() {
     assert_eq!(parse(b"<html><body>hi</body></html>").err(), Some(VaultError::InvalidImport));
     assert_eq!(parse(b"<a><b></a>").err(), Some(VaultError::InvalidImport));
 }
+
+/// The new entries of an import get its label as a tag; those the vault had do not.
+#[test]
+fn an_import_label_tags_only_what_is_new() {
+    let mut vault = vault::Vault::create(b"pw", vault::KdfParams::TEST_ONLY).unwrap();
+    let login = |title: &str| vault::NewEntry {
+        kind: vault::EntryKind::Login,
+        title: title.into(),
+        fields: vec![vault::Field {
+            name: field::USERNAME.into(),
+            value: b"alex".to_vec(),
+            concealed: false,
+            custom: false,
+        }],
+    };
+    vault.import(vec![login("GitHub")]).unwrap();
+    let merged = vault
+        .import_labelled(vec![login("GitHub"), login("GitLab")], Some("Imported from Passwords"))
+        .unwrap();
+    assert_eq!((merged.added, merged.matched), (1, 1));
+    let tagged: Vec<_> = vault
+        .entries()
+        .iter()
+        .filter(|e| e.tags.iter().any(|t| t == "Imported from Passwords"))
+        .map(|e| e.title.clone())
+        .collect();
+    assert_eq!(tagged, ["GitLab"]);
+}

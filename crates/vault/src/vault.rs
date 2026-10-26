@@ -411,6 +411,13 @@ impl Vault {
     /// a live one has its kind, title and fields, whatever their order, not counting what an
     /// import never brings: tags, the picture, links. Its tags are added to that entry.
     pub fn import(&mut self, entries: Vec<NewEntry>) -> Result<Merged> {
+        self.import_labelled(entries, None)
+    }
+
+    /// `import`, with the new entries — not those the vault had — tagged `label` (the app's
+    /// «Imported from 1Password»), so what an import brought can be found and looked over.
+    pub fn import_labelled(&mut self, entries: Vec<NewEntry>, label: Option<&str>) -> Result<Merged> {
+        let label = label.map(str::trim).filter(|l| !l.is_empty());
         let mut existing = Vec::with_capacity(self.index.len());
         for summary in &self.index {
             let entry = self.live(&summary.id)?;
@@ -421,6 +428,22 @@ impl Vault {
         for new in entries {
             let key = Comparable::of(new.kind, &new.title, &new.fields);
             let Some(found) = existing.iter_mut().find(|(_, other, used)| !used && *other == key) else {
+                let mut new = new;
+                if let Some(label) = label {
+                    let known = new.fields.iter().any(|field| {
+                        field.name == field::TAG
+                            && !field.custom
+                            && field.value.eq_ignore_ascii_case(label.as_bytes())
+                    });
+                    if !known {
+                        new.fields.push(Field {
+                            name: field::TAG.into(),
+                            value: label.as_bytes().to_vec(),
+                            concealed: false,
+                            custom: false,
+                        });
+                    }
+                }
                 self.add_entry(new);
                 merged.added += 1;
                 continue;
