@@ -413,6 +413,24 @@ impl Vault {
         Ok(crate::strength::estimate(text))
     }
 
+    /// Every live entry as a KDBX 4.0 file opened by `key` (ADR-0008): logins as KeePass has
+    /// them, other kinds with DeepVault's field names and kind, tags as KeePass tags, files as
+    /// binaries. Argon2id and ChaCha20; the caller writes it where the user chose.
+    pub fn export_kdbx(&mut self, key: &crate::kdbx::Key) -> Result<Vec<u8>> {
+        let mut entries = Vec::with_capacity(self.index.len());
+        for summary in &self.index {
+            let entry = self.live(&summary.id)?;
+            entries.push(crate::kdbx::ExportEntry {
+                kind: entry.kind,
+                title: entry.title.clone(),
+                fields: entry.fields.clone(),
+                created: entry.created_at,
+                modified: entry.updated_at,
+            });
+        }
+        crate::kdbx::write(&entries, key, self.entropy.as_mut())
+    }
+
     /// The password audit (PRD 05, Pro): every login's and password entry's `password`, how
     /// strong it is and which other entries share it — rated and compared here, so no password
     /// leaves the core. Generated passwords are left out: one in use is also in its login, and

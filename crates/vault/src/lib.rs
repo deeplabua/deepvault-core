@@ -17,6 +17,7 @@ mod error;
 mod format;
 pub mod generator;
 pub mod import;
+pub mod kdbx;
 pub mod kdf;
 pub mod keys;
 mod secret;

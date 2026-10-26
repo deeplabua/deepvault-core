@@ -25,6 +25,14 @@ zeroize = { version = "1.9", features = ["derive"] }
 getrandom = "0.4"
 # SSH ed25519 keys for the agent (ADR-0006): signing only, keys made from our own randomness.
 ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
+# KeePass KDBX import and export (ADR-0008): outer ciphers, KDBX 3.1's AES-KDF and inner
+# stream, gzip (pure Rust), the XML inside.
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+chacha20 = "0.10"
+salsa20 = "0.11"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+quick-xml = "0.42"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 ciborium = "0.2"
 serde_json = "1"

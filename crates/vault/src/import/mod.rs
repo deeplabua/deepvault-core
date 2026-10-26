@@ -25,6 +25,8 @@ pub enum Format {
     Chrome,
     Firefox,
     Secrets,
+    /// A KeePass KDBX file (`kdbx::read`, ADR-0008).
+    KeePass,
     /// CSV with known column names, but not one of the above's set.
     Other,
 }
@@ -58,7 +60,7 @@ fn trimmed(value: &[u8]) -> Zeroizing<Vec<u8>> {
 }
 
 /// `https://www.example.com/login` → `example.com` (a title for an item without one).
-fn host(url: &[u8]) -> Option<String> {
+pub(crate) fn host(url: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(url).ok()?;
     let rest = text.split_once("://").map_or(text, |(_, rest)| rest);
     let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.split(':').next()?;
