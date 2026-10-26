@@ -33,6 +33,8 @@ chacha20 = "0.10"
 salsa20 = "0.11"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 quick-xml = "0.42"
+# Passkeys (ADR-0010): ECDSA P-256 / SHA-256, signed inside the core.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "arithmetic", "alloc"] }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 ciborium = "0.2"
 serde_json = "1"

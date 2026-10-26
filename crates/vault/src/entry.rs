@@ -44,6 +44,9 @@ pub mod field {
     pub const SSH_PRIVATE_KEY: &str = "ssh_private_key";
     /// An SSH key's public line, `ssh-ed25519 AAAA… comment` (not concealed).
     pub const SSH_PUBLIC_KEY: &str = "ssh_public_key";
+    /// A passkey of a login (ADR-0010): CBOR with its site, id, user and P-256 key (concealed;
+    /// repeated for several).
+    pub const PASSKEY: &str = "passkey";
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,

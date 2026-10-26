@@ -28,6 +28,16 @@ pub struct Vault {
     entropy: Box<dyn Entropy>,
 }
 
+/// A passkey's public facts (`Vault::passkeys`): its entry, site, id and user. Not the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyInfo {
+    pub entry: [u8; ENTRY_ID_LEN],
+    pub rp_id: String,
+    pub credential_id: Vec<u8>,
+    pub user_handle: Vec<u8>,
+    pub user_name: String,
+}
+
 /// One password the audit looked at (`Vault::audit`): where it is, how strong it is, and the
 /// group of entries sharing it (`None`: no other entry has it). Never the password itself.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -276,6 +286,104 @@ impl Vault {
         let field = entry.field(field::SSH_PRIVATE_KEY).ok_or(VaultError::NotFound)?;
         let text = std::str::from_utf8(&field.value).map_err(|_| VaultError::InvalidSshKey)?;
         Ok(crate::ssh::Ed25519Key::from_openssh(text)?.sign(data))
+    }
+
+    /// A new passkey (ADR-0010) for `rp_id` and the user: added to `entry` (a login of that
+    /// site), or to a new login titled `rp_id`. The key is made here and never leaves; the
+    /// platform gets the credential id and the attestation object. The caller saves.
+    pub fn passkey_register(
+        &mut self,
+        entry: Option<&[u8; ENTRY_ID_LEN]>,
+        rp_id: &str,
+        user_handle: &[u8],
+        user_name: &str,
+        user_display: &str,
+    ) -> Result<([u8; ENTRY_ID_LEN], crate::passkey::Registration)> {
+        let passkey =
+            crate::passkey::Passkey::new(rp_id, user_handle, user_name, user_display, self.entropy.as_mut());
+        let registration = passkey.registration()?;
+        let field =
+            Field { name: field::PASSKEY.into(), value: passkey.to_bytes(), concealed: true, custom: false };
+        let id = match entry {
+            Some(id) => {
+                let old = self.live(id)?;
+                let mut fields = old.fields.clone();
+                fields.push(field);
+                self.update_entry(id, NewEntry { kind: old.kind, title: old.title.clone(), fields })?;
+                *id
+            }
+            None => {
+                let mut fields = vec![];
+                if !user_name.is_empty() {
+                    fields.push(Field {
+                        name: field::USERNAME.into(),
+                        value: user_name.as_bytes().to_vec(),
+                        concealed: false,
+                        custom: false,
+                    });
+                }
+                fields.push(Field {
+                    name: field::URL.into(),
+                    value: format!("https://{rp_id}").into_bytes(),
+                    concealed: false,
+                    custom: false,
+                });
+                fields.push(field);
+                self.add_entry(NewEntry { kind: EntryKind::Login, title: rp_id.into(), fields })
+            }
+        };
+        Ok((id, registration))
+    }
+
+    /// The live passkeys for `rp_id` (every site when `None`): where they are and for whom —
+    /// never a key.
+    pub fn passkeys(&self, rp_id: Option<&str>) -> Vec<PasskeyInfo> {
+        let mut out = Vec::new();
+        for summary in &self.index {
+            let Ok(entry) = self.live(&summary.id) else { continue };
+            for field in entry.fields.iter().filter(|f| f.name == field::PASSKEY && !f.custom) {
+                let Ok(passkey) = crate::passkey::Passkey::from_bytes(&field.value) else { continue };
+                if rp_id.is_some_and(|rp| rp != passkey.rp_id) {
+                    continue;
+                }
+                out.push(PasskeyInfo {
+                    entry: summary.id,
+                    rp_id: passkey.rp_id.clone(),
+                    credential_id: passkey.credential_id.clone(),
+                    user_handle: passkey.user_handle.clone(),
+                    user_name: passkey.user_name.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Signs a sign-in to `rp_id` with the passkey `credential_id`: authenticator data and the
+    /// signature; the key stays here.
+    pub fn passkey_assert(
+        &self,
+        rp_id: &str,
+        credential_id: &[u8],
+        client_data_hash: &[u8],
+    ) -> Result<(PasskeyInfo, crate::passkey::Assertion)> {
+        for summary in &self.index {
+            let Ok(entry) = self.live(&summary.id) else { continue };
+            for field in entry.fields.iter().filter(|f| f.name == field::PASSKEY && !f.custom) {
+                let Ok(passkey) = crate::passkey::Passkey::from_bytes(&field.value) else { continue };
+                if passkey.rp_id == rp_id && passkey.credential_id == credential_id {
+                    let assertion = passkey.assert(client_data_hash)?;
+                    let info = PasskeyInfo {
+                        entry: summary.id,
+                        rp_id: passkey.rp_id.clone(),
+                        credential_id: passkey.credential_id.clone(),
+                        user_handle: passkey.user_handle.clone(),
+                        user_name: passkey.user_name.clone(),
+                    };
+                    return Ok((info, assertion));
+                }
+            }
+        }
+        Err(VaultError::NotFound)
     }
 
     /// Adds another password manager's entries (`import::parse`), leaving out those the vault
