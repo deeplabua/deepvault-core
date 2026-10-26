@@ -159,6 +159,8 @@ pub struct EntrySummary {
     pub icon: Option<Vec<u8>>,
     /// The entry has a one-time-code field (the list shows a clock).
     pub has_otp: bool,
+    /// The entry keeps a passkey (ADR-0010): the sidebar's «Passkeys».
+    pub has_passkey: bool,
     /// The entry's tags, in order (for the sidebar and search).
     pub tags: Vec<String>,
     /// The ids (32 lowercase hex digits) of the entries this one links to, in order.
@@ -192,6 +194,7 @@ impl EntrySummary {
             username: visible(field::USERNAME),
             icon: entry.field(field::ICON).filter(|field| !field.concealed).map(|field| field.value.clone()),
             has_otp: entry.field(field::TOTP).is_some(),
+            has_passkey: entry.fields.iter().any(|field| field.name == field::PASSKEY && !field.custom),
             card_network: entry.field(field::NUMBER).and_then(|field| card_network(&field.value)),
             card_last4: entry.field(field::NUMBER).and_then(|field| {
                 let digits: Vec<u8> = field.value.iter().copied().filter(u8::is_ascii_digit).collect();

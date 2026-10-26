@@ -386,6 +386,25 @@ impl Vault {
         Err(VaultError::NotFound)
     }
 
+    /// Removes the passkey `credential_id` from `entry`: the rest of the entry stays as it is,
+    /// the key goes with the field. The caller saves.
+    pub fn passkey_delete(&mut self, entry: &[u8; ENTRY_ID_LEN], credential_id: &[u8]) -> Result<()> {
+        let old = self.live(entry)?;
+        let mut fields = old.fields.clone();
+        let before = fields.len();
+        fields.retain(|f| {
+            f.name != field::PASSKEY
+                || f.custom
+                || crate::passkey::Passkey::from_bytes(&f.value)
+                    .map_or(true, |p| p.credential_id != credential_id)
+        });
+        if fields.len() == before {
+            return Err(VaultError::NotFound);
+        }
+        let new = NewEntry { kind: old.kind, title: old.title.clone(), fields };
+        self.update_entry(entry, new)
+    }
+
     /// Adds another password manager's entries (`import::parse`), leaving out those the vault
     /// already has — so importing the same export again, or a newer one, adds only what is new
     /// and keeps what the user did here (pictures, links, edits). An entry is already there when

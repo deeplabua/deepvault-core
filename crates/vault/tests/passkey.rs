@@ -95,6 +95,30 @@ fn a_passkey_joins_an_existing_login() {
     assert_eq!(vault.fields(&login).unwrap().iter().filter(|f| f.name == field::PASSKEY).count(), 1);
 }
 
+#[test]
+fn a_deleted_passkey_no_longer_signs_and_its_login_stays() {
+    let mut vault = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
+    let (entry, first) = vault.passkey_register(None, "github.com", b"h", "alex", "Alex").unwrap();
+    let (_, second) = vault.passkey_register(Some(&entry), "github.com", b"h2", "alex", "Alex").unwrap();
+    assert!(vault.entries().iter().any(|e| e.id == entry && e.has_passkey));
+    vault.passkey_delete(&entry, &first.credential_id).unwrap();
+
+    let left = vault.passkeys(None);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].credential_id, second.credential_id);
+    assert!(matches!(
+        vault.passkey_assert("github.com", &first.credential_id, &[0; 32]),
+        Err(VaultError::NotFound)
+    ));
+    assert!(vault.passkey_assert("github.com", &second.credential_id, &[0; 32]).is_ok());
+    let fields = vault.fields(&entry).unwrap();
+    assert!(fields.iter().any(|f| f.name == field::USERNAME));
+    assert!(fields.iter().any(|f| f.name == field::URL));
+    assert!(matches!(vault.passkey_delete(&entry, &first.credential_id), Err(VaultError::NotFound)));
+    vault.passkey_delete(&entry, &second.credential_id).unwrap();
+    assert!(vault.entries().iter().any(|e| e.id == entry && !e.has_passkey));
+}
+
 /// Writes a registration and an assertion to `$PASSKEY_OUT` as hex JSON, for another
 /// implementation to check: `PASSKEY_OUT=/tmp/pk.json cargo test --test passkey -- --ignored`.
 #[test]
