@@ -637,3 +637,33 @@ fn a_backup_restores_into_the_vault_in_use_without_doubling() {
     assert_eq!(titles, ["Example", "New here", "Deleted here"]);
     assert_eq!(backup.export_entries().unwrap().len(), 1);
 }
+
+// MARK: - Audit
+
+#[test]
+fn the_audit_rates_passwords_and_groups_the_reused_without_giving_them_out() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let a = vault.add_entry(login("A", "same-Password-9!x"));
+    let weak = vault.add_entry(login("Weak", "123456"));
+    let b = vault.add_entry(login("B", "same-Password-9!x"));
+    let unique = vault.add_entry(login("Unique", "Kq7#vR2!mX9@pL4z"));
+    // A generated password equal to A's is not counted as reuse.
+    let mut generated = login("Generated", "same-Password-9!x");
+    generated.kind = EntryKind::GeneratedPassword;
+    vault.add_entry(generated);
+    // A note is not audited.
+    let mut note = login("Note", "123456");
+    note.kind = EntryKind::Note;
+    vault.add_entry(note);
+
+    let items = vault.audit();
+    let of = |id: [u8; 16]| items.iter().find(|item| item.id == id).copied().unwrap();
+    assert_eq!(items.len(), 4);
+    assert_eq!(of(a).reused, of(b).reused);
+    assert!(of(a).reused.is_some());
+    assert_eq!(of(weak).reused, None);
+    assert_eq!(of(unique).reused, None);
+    assert_eq!(of(a).index, 2);
+    assert!(of(weak).strength.level < vault::strength::Level::Fair);
+    assert!(of(unique).strength.level >= vault::strength::Level::Strong);
+}

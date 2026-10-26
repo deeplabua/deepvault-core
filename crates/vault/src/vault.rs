@@ -28,6 +28,17 @@ pub struct Vault {
     entropy: Box<dyn Entropy>,
 }
 
+/// One password the audit looked at (`Vault::audit`): where it is, how strong it is, and the
+/// group of entries sharing it (`None`: no other entry has it). Never the password itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AuditItem {
+    pub id: [u8; ENTRY_ID_LEN],
+    /// The field's position, as `fields` lists them.
+    pub index: usize,
+    pub strength: crate::strength::Strength,
+    pub reused: Option<usize>,
+}
+
 impl Vault {
     /// A new vault with one password slot and no entries. Runs the KDF once.
     pub fn create(password: &[u8], params: KdfParams) -> Result<Self> {
@@ -400,6 +411,57 @@ impl Vault {
         let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
         let text = std::str::from_utf8(&field.value).map_err(|_| VaultError::NotFound)?;
         Ok(crate::strength::estimate(text))
+    }
+
+    /// The password audit (PRD 05, Pro): every login's and password entry's `password`, how
+    /// strong it is and which other entries share it — rated and compared here, so no password
+    /// leaves the core. Generated passwords are left out: one in use is also in its login, and
+    /// would be «reused» by itself. Entries in index order, fields in entry order.
+    pub fn audit(&self) -> Vec<AuditItem> {
+        let mut items = Vec::new();
+        let mut values: Vec<Zeroizing<Vec<u8>>> = Vec::new();
+        for summary in &self.index {
+            if !matches!(summary.kind, EntryKind::Login | EntryKind::Password) {
+                continue;
+            }
+            let Ok(entry) = self.live(&summary.id) else { continue };
+            for (index, field) in entry.fields.iter().enumerate() {
+                if field.custom || field.name != field::PASSWORD || field.value.is_empty() {
+                    continue;
+                }
+                let Ok(text) = std::str::from_utf8(&field.value) else { continue };
+                items.push(AuditItem {
+                    id: summary.id,
+                    index,
+                    strength: crate::strength::estimate(text),
+                    reused: None,
+                });
+                values.push(Zeroizing::new(field.value.clone()));
+            }
+        }
+        // Groups of the same password in different entries, numbered from 0.
+        let mut groups = 0;
+        for first in 0..items.len() {
+            if items[first].reused.is_some() {
+                continue;
+            }
+            let same: Vec<usize> = (first + 1..items.len())
+                .filter(|&other| {
+                    items[other].reused.is_none()
+                        && items[other].id != items[first].id
+                        && values[other] == values[first]
+                })
+                .collect();
+            if same.is_empty() {
+                continue;
+            }
+            items[first].reused = Some(groups);
+            for other in same {
+                items[other].reused = Some(groups);
+            }
+            groups += 1;
+        }
+        items
     }
 
     /// The one-time code of the TOTP field at `index` at `unix_time`. The secret stays here.
