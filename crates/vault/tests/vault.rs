@@ -520,6 +520,7 @@ const CHOICE: vault::MergeChoice<'static> = vault::MergeChoice {
     password_from: None,
     previous_password: "Previous password",
     previous_code: "Previous 2FA code",
+    leave_out: &[],
 };
 
 #[test]
@@ -573,6 +574,34 @@ fn merging_keeps_one_entry_with_everything_once() {
     assert_eq!(reopened.secret(&keep, field::NOTES).unwrap().expose(), b"recovery codes in the safe");
     // A link to the merged-away entry now goes to the kept one.
     assert_eq!(reopened.entries()[1].links, [hex(&keep)]);
+}
+
+#[test]
+fn sites_and_tags_taken_out_stay_out() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let keep =
+        vault.add_entry(with(login("m16.local", "pw"), &[(field::TAG, "lastpass-import", false, false)]));
+    let other = vault.add_entry(with(
+        login("m16.local", "pw"),
+        &[
+            (field::URL, "http://www.m16.local/admin/", false, false),
+            (field::TAG, "Imported from Apple Passwords", false, false),
+        ],
+    ));
+    let leave_out = [
+        (field::URL.to_string(), b"http://www.m16.local/admin/".to_vec()),
+        (field::TAG.to_string(), b"lastpass-import".to_vec()),
+    ];
+    vault.merge(&keep, &[other], vault::MergeChoice { leave_out: &leave_out, ..CHOICE }).unwrap();
+    assert_eq!(vault.entries()[0].tags, ["Imported from Apple Passwords"]);
+    let sites: Vec<_> = vault
+        .fields(&keep)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.name == field::URL)
+        .filter_map(|f| f.value.clone())
+        .collect();
+    assert_eq!(sites, ["https://example.com"]);
 }
 
 #[test]

@@ -651,6 +651,12 @@ impl Vault {
                 if known(field::PASSWORD) {
                     continue;
                 }
+                if !f.custom
+                    && !f.concealed
+                    && choice.leave_out.iter().any(|(name, value)| *name == f.name && *value == f.value)
+                {
+                    continue;
+                }
                 if (known(field::LINK) || known(field::DISTINCT))
                     && merged_ids.iter().any(|id| id.as_bytes() == f.value.as_slice())
                 {
@@ -1037,6 +1043,9 @@ pub struct MergeChoice<'a> {
     pub previous_password: &'a str,
     /// The same for a different one-time code.
     pub previous_code: &'a str,
+    /// Visible values the user took out (a site, a tag): `(field name, value)`, left out of the
+    /// merged entry wherever they come from.
+    pub leave_out: &'a [(String, Vec<u8>)],
 }
 
 /// An id as the index writes links: 32 lowercase hex digits.
