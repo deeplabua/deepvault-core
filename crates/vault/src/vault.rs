@@ -309,18 +309,19 @@ impl Vault {
     /// A new ed25519 SSH key made here (ADR-0006): the private half never leaves the core.
     pub fn add_ssh_key(&mut self, title: &str, comment: &str) -> [u8; ENTRY_ID_LEN] {
         let key = crate::ssh::Ed25519Key::generate(&mut *self.entropy, comment);
-        self.add_ssh_entry(title, &key)
+        self.add_ssh_entry(title, &crate::ssh::PrivateKey::Ed25519(key))
     }
 
-    /// An SSH key from its `-----BEGIN OPENSSH PRIVATE KEY-----` text (unencrypted ed25519);
-    /// stored re-encoded, so the vault holds one canonical form.
+    /// An SSH key from its `-----BEGIN OPENSSH PRIVATE KEY-----` text (unencrypted ed25519, or
+    /// RSA of 2048 bits or more, ADR-0011); stored re-encoded, so the vault holds one canonical
+    /// form.
     pub fn import_ssh_key(&mut self, title: &str, private_key: &[u8]) -> Result<[u8; ENTRY_ID_LEN]> {
         let text = std::str::from_utf8(private_key).map_err(|_| VaultError::InvalidSshKey)?;
-        let key = crate::ssh::Ed25519Key::from_openssh(text)?;
+        let key = crate::ssh::PrivateKey::from_openssh(text)?;
         Ok(self.add_ssh_entry(title, &key))
     }
 
-    fn add_ssh_entry(&mut self, title: &str, key: &crate::ssh::Ed25519Key) -> [u8; ENTRY_ID_LEN] {
+    fn add_ssh_entry(&mut self, title: &str, key: &crate::ssh::PrivateKey) -> [u8; ENTRY_ID_LEN] {
         let private = key.to_openssh(&mut *self.entropy);
         self.add_entry(NewEntry {
             kind: EntryKind::SshKey,
@@ -342,16 +343,17 @@ impl Vault {
         })
     }
 
-    /// The signature of `data` by the SSH key of a live `ssh_key` entry, in the SSH wire format.
-    /// The private key is read, used and zeroed here.
-    pub fn ssh_sign(&self, id: &[u8; ENTRY_ID_LEN], data: &[u8]) -> Result<Vec<u8>> {
+    /// The signature of `data` by the SSH key of a live `ssh_key` entry, in the SSH wire format;
+    /// `flags` are the agent's SIGN_REQUEST flags (an RSA key's hash). The private key is read,
+    /// used and zeroed here.
+    pub fn ssh_sign(&self, id: &[u8; ENTRY_ID_LEN], data: &[u8], flags: u32) -> Result<Vec<u8>> {
         let entry = self.live(id)?;
         if entry.kind != EntryKind::SshKey {
             return Err(VaultError::NotFound);
         }
         let field = entry.field(field::SSH_PRIVATE_KEY).ok_or(VaultError::NotFound)?;
         let text = std::str::from_utf8(&field.value).map_err(|_| VaultError::InvalidSshKey)?;
-        Ok(crate::ssh::Ed25519Key::from_openssh(text)?.sign(data))
+        Ok(crate::ssh::PrivateKey::from_openssh(text)?.sign(data, flags)?)
     }
 
     /// A new passkey (ADR-0010) for `rp_id` and the user: added to `entry` (a login of that
