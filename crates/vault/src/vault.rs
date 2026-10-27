@@ -686,6 +686,9 @@ impl Vault {
                 if known(field::PASSWORD) {
                     continue;
                 }
+                if choice.leave_out_of.iter().any(|(id, name)| *id == seen[position] && known(name)) {
+                    continue;
+                }
                 if !f.custom
                     && !f.concealed
                     && choice.leave_out.iter().any(|(name, value)| *name == f.name && *value == f.value)
@@ -1081,6 +1084,9 @@ pub struct MergeChoice<'a> {
     /// Visible values the user took out (a site, a tag): `(field name, value)`, left out of the
     /// merged entry wherever they come from.
     pub leave_out: &'a [(String, Vec<u8>)],
+    /// Fields one entry does not bring, whatever their value — its notes, which may be
+    /// concealed and are never read out to compare: `(entry, field name)`.
+    pub leave_out_of: &'a [([u8; ENTRY_ID_LEN], String)],
 }
 
 /// An id as the index writes links: 32 lowercase hex digits.

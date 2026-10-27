@@ -521,6 +521,7 @@ const CHOICE: vault::MergeChoice<'static> = vault::MergeChoice {
     previous_password: "Previous password",
     previous_code: "Previous 2FA code",
     leave_out: &[],
+    leave_out_of: &[],
 };
 
 #[test]
@@ -602,6 +603,19 @@ fn sites_and_tags_taken_out_stay_out() {
         .filter_map(|f| f.value.clone())
         .collect();
     assert_eq!(sites, ["https://example.com"]);
+}
+
+#[test]
+fn notes_left_out_of_one_entry_stay_out_even_concealed() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let keep = vault.add_entry(with(login("example.com", "pw"), &[(field::NOTES, "keep me", false, false)]));
+    let other =
+        vault.add_entry(with(login("example.com", "pw"), &[(field::NOTES, "old secret note", true, false)]));
+    let leave_out_of = [(other, field::NOTES.to_string())];
+    vault.merge(&keep, &[other], vault::MergeChoice { leave_out_of: &leave_out_of, ..CHOICE }).unwrap();
+    let notes: Vec<_> = vault.fields(&keep).unwrap().into_iter().filter(|f| f.name == field::NOTES).collect();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].value.as_deref(), Some("keep me"));
 }
 
 #[test]
