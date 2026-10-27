@@ -171,6 +171,41 @@ impl Vault {
         })
     }
 
+    /// Undo: the entries as they were in `file`, a copy of this same vault saved earlier
+    /// (`to_bytes` before a merge). Its MACs must check with this vault's keys — another vault
+    /// or a damaged copy is refused and nothing changes. The header (slots, KDF) stays as it is
+    /// now: only the entries go back.
+    pub fn revert_to(&mut self, file: &[u8]) -> Result<()> {
+        let raw = format::parse(file)?;
+        if raw.header.vault_id != self.header.vault_id
+            || !keys::verify_mac(&self.keys.header_mac, raw.header_region, raw.header_mac)
+            || !keys::verify_mac(&self.keys.file_mac, raw.file_region, raw.file_mac)
+        {
+            return Err(VaultError::Corrupted);
+        }
+        let mut index = Vec::new();
+        let mut trash = Vec::new();
+        for (position, block) in raw.blocks.iter().enumerate() {
+            if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
+                return Err(VaultError::Corrupted);
+            }
+            let entry = decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)?;
+            if entry.deleted {
+                continue;
+            }
+            let summary = EntrySummary::new(block.entry_id, &entry);
+            if entry.trashed_at == 0 {
+                index.push(summary)
+            } else {
+                trash.push(summary)
+            }
+        }
+        self.blocks = raw.blocks;
+        self.index = index;
+        self.trash = trash;
+        Ok(())
+    }
+
     /// The whole file, ready to be written atomically by the caller.
     pub fn to_bytes(&self) -> Vec<u8> {
         format::write(&self.header, &self.blocks, &self.keys)

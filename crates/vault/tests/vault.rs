@@ -639,6 +639,35 @@ fn another_account_is_marked_on_both_and_can_be_forgotten() {
 }
 
 #[test]
+fn a_merge_is_undone_from_the_copy_saved_before() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let keep = vault.add_entry(login("GitHub", "new"));
+    let other = vault.add_entry(with(login("github.com", "old"), &[(field::TAG, "imported", false, false)]));
+    let before = vault.to_bytes();
+    vault.merge(&keep, &[other], CHOICE).unwrap();
+    assert_eq!(vault.entries().len(), 1);
+
+    vault.revert_to(&before).unwrap();
+    assert_eq!(vault.entries().iter().map(|e| e.id).collect::<Vec<_>>(), [keep, other]);
+    assert!(vault.trashed().is_empty());
+    assert!(vault.fields(&keep).unwrap().iter().all(|f| f.name != "Previous password"));
+    assert_eq!(vault.entries()[1].tags, ["imported"]);
+    // Saved and opened again: as before the merge.
+    let reopened = open(&vault.to_bytes()).unwrap();
+    assert_eq!(reopened.entries().len(), 2);
+
+    // Another vault's file, or a damaged one, changes nothing.
+    let mut stranger = Vault::create(PASSWORD, PARAMS).unwrap();
+    stranger.add_entry(login("x", "y"));
+    assert_eq!(vault.revert_to(&stranger.to_bytes()).err(), Some(VaultError::Corrupted));
+    let mut damaged = before.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    assert_eq!(vault.revert_to(&damaged).err(), Some(VaultError::Corrupted));
+    assert_eq!(vault.entries().len(), 2);
+}
+
+#[test]
 fn nothing_is_written_in_the_clear() {
     let file = sample();
     let contains = |needle: &[u8]| file.windows(needle.len()).any(|window| window == needle);
