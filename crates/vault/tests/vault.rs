@@ -454,6 +454,52 @@ fn recently_deleted_is_emptied_for_good() {
 }
 
 #[test]
+fn search_finds_notes_and_names_but_never_secrets() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let mut with_notes = login("Homebrew", "ghp_SECRETvalue");
+    with_notes.fields.push(Field {
+        name: field::NOTES.into(),
+        value: b"Release token: HOMEBREW_TAP_TOKEN for the tap".to_vec(),
+        concealed: true,
+        custom: false,
+    });
+    let notes = vault.add_entry(with_notes);
+    let env = vault.add_entry(NewEntry {
+        kind: EntryKind::Environment,
+        title: "CI".into(),
+        fields: vec![Field {
+            name: "NPM_TOKEN".into(),
+            value: b"npm_hidden".to_vec(),
+            concealed: true,
+            custom: true,
+        }],
+    });
+    let trashed = vault.add_entry(login("Old", "pw"));
+    vault
+        .update_entry(&trashed, {
+            let mut old = login("Old", "pw");
+            old.fields.push(Field {
+                name: field::NOTES.into(),
+                value: b"homebrew".to_vec(),
+                concealed: false,
+                custom: false,
+            });
+            old
+        })
+        .unwrap();
+    vault.trash_entry(&trashed).unwrap();
+
+    assert_eq!(vault.search("homebrew_tap").unwrap(), [notes]);
+    assert_eq!(vault.search("  npm_token ").unwrap(), [env]);
+    assert_eq!(vault.search("alice").unwrap(), [notes]);
+    // Passwords and concealed values are not searched; nor is Recently Deleted.
+    assert!(vault.search("SECRETvalue").unwrap().is_empty());
+    assert!(vault.search("npm_hidden").unwrap().is_empty());
+    assert_eq!(vault.search("HOMEBREW").unwrap(), [notes]);
+    assert!(vault.search("").unwrap().is_empty());
+}
+
+#[test]
 fn nothing_is_written_in_the_clear() {
     let file = sample();
     let contains = |needle: &[u8]| file.windows(needle.len()).any(|window| window == needle);

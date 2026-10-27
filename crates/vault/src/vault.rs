@@ -12,6 +12,19 @@ use crate::secret::{Key, SecretBytes};
 use zeroize::Zeroizing;
 
 const KDF_ALG: &str = "argon2id";
+/// The fields `Vault::search` reads, when not concealed (notes always; custom fields by name).
+const SEARCHED: &[&str] = &[
+    field::URL,
+    field::USERNAME,
+    field::TAG,
+    field::SHELL,
+    field::EMAIL,
+    field::CARDHOLDER,
+    field::BANK,
+    field::HOLDER,
+    field::LICENSED_TO,
+    field::VERSION,
+];
 /// Device slot: `version (1) ‖ nonce (24 B) ‖ wrapped VK (48 B)`.
 const DEVICE_SLOT_VERSION: u8 = 1;
 const DEVICE_SLOT_LEN: usize = 1 + NONCE_LEN + WRAPPED_VK_LEN;
@@ -664,6 +677,37 @@ impl Vault {
             });
         }
         crate::kdbx::write(&entries, key, self.entropy.as_mut())
+    }
+
+    /// The live entries whose words have `query` in them, ignoring case: the title, sites, user
+    /// name, tags, notes (concealed or not), the names of custom fields and variables, and the
+    /// values that are not concealed. Never passwords, codes, card numbers, keys or files — the
+    /// search runs here, and only ids come out.
+    pub fn search(&self, query: &str) -> Result<Vec<[u8; ENTRY_ID_LEN]>> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let has =
+            |bytes: &[u8]| std::str::from_utf8(bytes).is_ok_and(|text| text.to_lowercase().contains(&query));
+        let mut found = Vec::new();
+        for summary in &self.index {
+            let entry = self.live(&summary.id)?;
+            let matches = has(entry.title.as_bytes())
+                || entry.fields.iter().any(|f| {
+                    if f.custom {
+                        has(f.name.as_bytes()) || (!f.concealed && has(&f.value))
+                    } else if f.name == field::NOTES {
+                        has(&f.value)
+                    } else {
+                        SEARCHED.contains(&f.name.as_str()) && !f.concealed && has(&f.value)
+                    }
+                });
+            if matches {
+                found.push(summary.id);
+            }
+        }
+        Ok(found)
     }
 
     /// The password audit (PRD 05, Pro): every login's and password entry's `password`, how
