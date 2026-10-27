@@ -601,6 +601,211 @@ impl Vault {
         Ok(())
     }
 
+    /// Merges `others` into `keep` (Merge N Entries): one entry stays, with `choice.title` and
+    /// the password of `choice.password_from` (the kept entry's when `None`); every other
+    /// password it differs from stays as a concealed custom field named
+    /// `choice.previous_password`, a different one-time code as `choice.previous_code`. Sites,
+    /// tags, notes, passkeys, links, custom and other fields come together, each once; the user
+    /// name and picture are the kept entry's (another's when it has none). It is a favourite
+    /// when any was; created when the first was, used when the last was. `others` go to Recently
+    /// Deleted, and links to them now point to `keep`. Randomness: a nonce (24) per entry sealed.
+    pub fn merge(
+        &mut self,
+        keep: &[u8; ENTRY_ID_LEN],
+        others: &[[u8; ENTRY_ID_LEN]],
+        choice: MergeChoice,
+    ) -> Result<()> {
+        let mut seen = vec![*keep];
+        for id in others {
+            if seen.contains(id) {
+                return Err(VaultError::NotFound);
+            }
+            seen.push(*id);
+        }
+        if others.is_empty() {
+            return Err(VaultError::NotFound);
+        }
+        let kept = self.live(keep)?;
+        let rest = others.iter().map(|id| self.live(id)).collect::<Result<Vec<_>>>()?;
+        let all: Vec<&Entry> = std::iter::once(&kept).chain(rest.iter()).collect();
+        let merged_ids: Vec<String> = seen.iter().map(hex).collect();
+
+        let password = |entry: &Entry| entry.field(field::PASSWORD).map(|f| f.value.clone());
+        let from = choice.password_from.unwrap_or(*keep);
+        let chosen = seen.iter().position(|id| *id == from).ok_or(VaultError::NotFound)?;
+        let main = password(all[chosen]).or_else(|| all.iter().find_map(|entry| password(entry)));
+
+        let mut fields: Vec<Field> = Vec::new();
+        fn add(fields: &mut Vec<Field>, field: Field) {
+            if !fields
+                .iter()
+                .any(|f| f.name == field.name && f.value == field.value && f.custom == field.custom)
+            {
+                fields.push(field);
+            }
+        }
+        let has = |fields: &[Field], name: &str| fields.iter().any(|f| !f.custom && f.name == name);
+        for (position, entry) in all.iter().enumerate() {
+            for f in &entry.fields {
+                let known = |name: &str| !f.custom && f.name == name;
+                if known(field::PASSWORD) {
+                    continue;
+                }
+                if (known(field::LINK) || known(field::DISTINCT))
+                    && merged_ids.iter().any(|id| id.as_bytes() == f.value.as_slice())
+                {
+                    continue;
+                }
+                if position > 0 {
+                    if (known(field::USERNAME) || known(field::ICON)) && has(&fields, &f.name) {
+                        continue;
+                    }
+                    if known(field::TOTP) && has(&fields, field::TOTP) {
+                        if !fields.iter().any(|g| !g.custom && g.name == field::TOTP && g.value == f.value) {
+                            add(
+                                &mut fields,
+                                Field {
+                                    name: choice.previous_code.into(),
+                                    value: f.value.clone(),
+                                    concealed: true,
+                                    custom: true,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                }
+                add(&mut fields, f.clone());
+            }
+            if position == 0 {
+                if let Some(main) = &main {
+                    let at = fields
+                        .iter()
+                        .position(|f| !f.custom && f.name == field::USERNAME)
+                        .map_or(0, |i| i + 1);
+                    fields.insert(
+                        at,
+                        Field {
+                            name: field::PASSWORD.into(),
+                            value: main.clone(),
+                            concealed: true,
+                            custom: false,
+                        },
+                    );
+                }
+            }
+        }
+        for entry in &all {
+            if let Some(other) = password(entry) {
+                if main.as_ref() != Some(&other) {
+                    add(
+                        &mut fields,
+                        Field {
+                            name: choice.previous_password.into(),
+                            value: other,
+                            concealed: true,
+                            custom: true,
+                        },
+                    );
+                }
+            }
+        }
+
+        let title = choice.title.trim();
+        let entry = Entry {
+            kind: kept.kind,
+            title: if title.is_empty() { kept.title.clone() } else { title.to_owned() },
+            fields,
+            created_at: all.iter().map(|e| e.created_at).min().unwrap_or(kept.created_at),
+            updated_at: self.entropy.now().max(kept.updated_at),
+            used_at: all.iter().map(|e| e.used_at).max().unwrap_or(0),
+            favorite: all.iter().any(|e| e.favorite),
+            trashed_at: 0,
+            deleted: false,
+        };
+        let position =
+            self.index.iter().position(|summary| &summary.id == keep).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(keep)?;
+        self.index[position] = EntrySummary::new(*keep, &entry);
+        self.blocks[block] = self.seal(*keep, &entry);
+        drop(entry);
+        for id in others {
+            self.trash_entry(id)?;
+        }
+
+        // Links to the merged-away entries now go to the kept one.
+        let kept_hex = hex(keep);
+        let gone: Vec<String> = others.iter().map(hex).collect();
+        let linking: Vec<[u8; ENTRY_ID_LEN]> = self
+            .index
+            .iter()
+            .filter(|s| &s.id != keep && s.links.iter().chain(&s.distinct).any(|l| gone.contains(l)))
+            .map(|s| s.id)
+            .collect();
+        for id in linking {
+            let entry = self.live(&id)?;
+            let mut fields: Vec<Field> = Vec::new();
+            for f in &entry.fields {
+                let mut f = f.clone();
+                if !f.custom
+                    && (f.name == field::LINK || f.name == field::DISTINCT)
+                    && gone.iter().any(|g| g.as_bytes() == f.value.as_slice())
+                {
+                    f.value = kept_hex.as_bytes().to_vec();
+                }
+                add(&mut fields, f);
+            }
+            self.update_entry(&id, NewEntry { kind: entry.kind, title: entry.title.clone(), fields })?;
+        }
+        Ok(())
+    }
+
+    /// Notes that two live entries with the same site and user name are different accounts:
+    /// the audit stops offering them as duplicates. On both entries; their content stays.
+    /// Randomness: a nonce (24) per entry changed.
+    pub fn mark_distinct(&mut self, a: &[u8; ENTRY_ID_LEN], b: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+        if a == b {
+            return Err(VaultError::NotFound);
+        }
+        self.live(a)?;
+        self.live(b)?;
+        for (id, other) in [(a, b), (b, a)] {
+            let entry = self.live(id)?;
+            let other = hex(other);
+            if entry
+                .fields
+                .iter()
+                .any(|f| !f.custom && f.name == field::DISTINCT && f.value == other.as_bytes())
+            {
+                continue;
+            }
+            let mut fields = entry.fields.clone();
+            fields.push(Field {
+                name: field::DISTINCT.into(),
+                value: other.into_bytes(),
+                concealed: false,
+                custom: false,
+            });
+            self.update_entry(id, NewEntry { kind: entry.kind, title: entry.title.clone(), fields })?;
+        }
+        Ok(())
+    }
+
+    /// Takes back `mark_distinct`: the pair can be offered as duplicates again.
+    pub fn forget_distinct(&mut self, a: &[u8; ENTRY_ID_LEN], b: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+        for (id, other) in [(a, b), (b, a)] {
+            let Ok(entry) = self.live(id) else { continue };
+            let other = hex(other);
+            let mark = |f: &Field| !f.custom && f.name == field::DISTINCT && f.value == other.as_bytes();
+            if !entry.fields.iter().any(mark) {
+                continue;
+            }
+            let fields = entry.fields.iter().filter(|f| !mark(f)).cloned().collect();
+            self.update_entry(id, NewEntry { kind: entry.kind, title: entry.title.clone(), fields })?;
+        }
+        Ok(())
+    }
+
     /// Replaces a live entry's kind, title and fields. Its id, place and creation date stay;
     /// it is sealed again under a fresh nonce. Randomness: nonce (24).
     pub fn update_entry(&mut self, id: &[u8; ENTRY_ID_LEN], new: NewEntry) -> Result<()> {
@@ -821,6 +1026,22 @@ impl Vault {
         let ciphertext = aead::seal(&self.keys.entries, &nonce, &entry.to_cbor(), &aad);
         Block { entry_id: id, nonce, ciphertext }
     }
+}
+
+/// What `Vault::merge` keeps where the entries differ.
+pub struct MergeChoice<'a> {
+    pub title: &'a str,
+    /// The entry whose password the merged one keeps; `None`: the kept entry's.
+    pub password_from: Option<[u8; ENTRY_ID_LEN]>,
+    /// The name, in the user's language, of the custom field each other password goes to.
+    pub previous_password: &'a str,
+    /// The same for a different one-time code.
+    pub previous_code: &'a str,
+}
+
+/// An id as the index writes links: 32 lowercase hex digits.
+fn hex(id: &[u8; ENTRY_ID_LEN]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// What `Vault::import` did.

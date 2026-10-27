@@ -499,6 +499,116 @@ fn search_finds_notes_and_names_but_never_secrets() {
     assert!(vault.search("").unwrap().is_empty());
 }
 
+fn hex(id: &[u8; 16]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn with(mut entry: NewEntry, fields: &[(&str, &str, bool, bool)]) -> NewEntry {
+    for (name, value, concealed, custom) in fields {
+        entry.fields.push(Field {
+            name: (*name).into(),
+            value: value.as_bytes().to_vec(),
+            concealed: *concealed,
+            custom: *custom,
+        });
+    }
+    entry
+}
+
+const CHOICE: vault::MergeChoice<'static> = vault::MergeChoice {
+    title: "",
+    password_from: None,
+    previous_password: "Previous password",
+    previous_code: "Previous 2FA code",
+};
+
+#[test]
+fn merging_keeps_one_entry_with_everything_once() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let keep = vault.add_entry(with(
+        login("GitHub", "new-pass"),
+        &[(field::TAG, "work", false, false), (field::TOTP, "JBSWY3DPEHPK3PXP", true, false)],
+    ));
+    let other = vault.add_entry(with(
+        login("github.com", "old-pass"),
+        &[
+            (field::URL, "https://github.com/login", false, false),
+            (field::TAG, "work", false, false),
+            (field::TAG, "Imported from Apple Passwords", false, false),
+            (field::NOTES, "recovery codes in the safe", true, false),
+            (field::TOTP, "KRSXG5CTMVRXEZLU", true, false),
+        ],
+    ));
+    let third = vault.add_entry(login("GH", "new-pass"));
+    let linker = vault.add_entry(with(login("Docs", "x"), &[(field::LINK, &hex(&other), false, false)]));
+    vault.set_favorite(&other, true).unwrap();
+
+    vault.merge(&keep, &[other, third], vault::MergeChoice { title: "GitHub ", ..CHOICE }).unwrap();
+
+    let reopened = open(&vault.to_bytes()).unwrap();
+    assert_eq!(reopened.entries().iter().map(|e| e.id).collect::<Vec<_>>(), [keep, linker]);
+    assert_eq!(reopened.trashed().iter().map(|e| e.id).collect::<Vec<_>>(), [other, third]);
+    let merged = &reopened.entries()[0];
+    assert_eq!(merged.title, "GitHub");
+    assert!(merged.favorite);
+    assert_eq!(merged.tags, ["work", "Imported from Apple Passwords"]);
+    let fields = reopened.fields(&keep).unwrap();
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == field::URL).count(), 2);
+    assert_eq!(names.iter().filter(|n| **n == field::USERNAME).count(), 1);
+    assert_eq!(names.iter().filter(|n| **n == field::PASSWORD).count(), 1);
+    assert_eq!(reopened.secret(&keep, field::PASSWORD).unwrap().expose(), b"new-pass");
+    // The other password once (the third had the same as the kept one), the other code aside.
+    let previous: Vec<usize> = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.custom && f.name == "Previous password")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(previous.len(), 1);
+    assert_eq!(reopened.secret_at(&keep, previous[0]).unwrap().expose(), b"old-pass");
+    let code = fields.iter().position(|f| f.custom && f.name == "Previous 2FA code").unwrap();
+    assert_eq!(reopened.secret_at(&keep, code).unwrap().expose(), b"KRSXG5CTMVRXEZLU");
+    assert_eq!(reopened.secret(&keep, field::TOTP).unwrap().expose(), b"JBSWY3DPEHPK3PXP");
+    assert_eq!(reopened.secret(&keep, field::NOTES).unwrap().expose(), b"recovery codes in the safe");
+    // A link to the merged-away entry now goes to the kept one.
+    assert_eq!(reopened.entries()[1].links, [hex(&keep)]);
+}
+
+#[test]
+fn the_chosen_password_wins_and_bad_merges_are_refused() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let keep = vault.add_entry(login("A", "weak"));
+    let other = vault.add_entry(login("B", "Strong-and-long-1"));
+    assert_eq!(vault.merge(&keep, &[], CHOICE).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.merge(&keep, &[keep], CHOICE).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.merge(&keep, &[[9; 16]], CHOICE).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.entries().len(), 2);
+
+    vault.merge(&keep, &[other], vault::MergeChoice { password_from: Some(other), ..CHOICE }).unwrap();
+    assert_eq!(vault.entries()[0].title, "A");
+    assert_eq!(vault.secret(&keep, field::PASSWORD).unwrap().expose(), b"Strong-and-long-1");
+    let fields = vault.fields(&keep).unwrap();
+    let previous = fields.iter().position(|f| f.name == "Previous password").unwrap();
+    assert_eq!(vault.secret_at(&keep, previous).unwrap().expose(), b"weak");
+}
+
+#[test]
+fn another_account_is_marked_on_both_and_can_be_forgotten() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let a = vault.add_entry(login("Nextcloud", "1"));
+    let b = vault.add_entry(login("nextcloud", "2"));
+    vault.mark_distinct(&a, &b).unwrap();
+    vault.mark_distinct(&b, &a).unwrap();
+    let reopened = open(&vault.to_bytes()).unwrap();
+    assert_eq!(reopened.entries()[0].distinct, [hex(&b)]);
+    assert_eq!(reopened.entries()[1].distinct, [hex(&a)]);
+    assert_eq!(vault.mark_distinct(&a, &a).err(), Some(VaultError::NotFound));
+
+    vault.forget_distinct(&b, &a).unwrap();
+    assert!(vault.entries().iter().all(|e| e.distinct.is_empty()));
+}
+
 #[test]
 fn nothing_is_written_in_the_clear() {
     let file = sample();

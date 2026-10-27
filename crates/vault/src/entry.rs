@@ -47,6 +47,10 @@ pub mod field {
     /// A passkey of a login (ADR-0010): CBOR with its site, id, user and P-256 key (concealed;
     /// repeated for several).
     pub const PASSKEY: &str = "passkey";
+    /// Another entry with the same site and user name that is another account, by its id as 32
+    /// lowercase hex digits (`Vault::mark_distinct`; repeated, on both entries; not concealed:
+    /// in the index, so the audit does not offer the pair as duplicates).
+    pub const DISTINCT: &str = "distinct";
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
@@ -170,6 +174,8 @@ pub struct EntrySummary {
     pub tags: Vec<String>,
     /// The ids (32 lowercase hex digits) of the entries this one links to, in order.
     pub links: Vec<String>,
+    /// The ids of the entries marked as another account, not a duplicate of this one.
+    pub distinct: Vec<String>,
     /// A card's last four digits (`•••• 4417` in the list), from its `number` field: the rest
     /// of the number stays sealed.
     pub card_last4: Option<String>,
@@ -218,6 +224,12 @@ impl EntrySummary {
                 .fields
                 .iter()
                 .filter(|field| field.name == field::LINK && !field.concealed && !field.custom)
+                .filter_map(|field| String::from_utf8(field.value.clone()).ok())
+                .collect(),
+            distinct: entry
+                .fields
+                .iter()
+                .filter(|field| field.name == field::DISTINCT && !field.concealed && !field.custom)
                 .filter_map(|field| String::from_utf8(field.value.clone()).ok())
                 .collect(),
             created_at: entry.created_at,
