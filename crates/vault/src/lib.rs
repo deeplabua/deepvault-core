@@ -53,6 +53,28 @@ pub mod testing {
             updated_at,
             used_at: 0,
             favorite: false,
+            trashed_at: 0,
+            deleted: false,
+        };
+        entry.to_cbor().to_vec()
+    }
+
+    /// The CBOR of an entry in Recently Deleted since `trashed_at`.
+    pub fn trashed_entry_plaintext(
+        new: NewEntry,
+        created_at: u64,
+        updated_at: u64,
+        trashed_at: u64,
+    ) -> Vec<u8> {
+        let entry = Entry {
+            kind: new.kind,
+            title: new.title,
+            fields: new.fields,
+            created_at,
+            updated_at,
+            used_at: 0,
+            favorite: false,
+            trashed_at,
             deleted: false,
         };
         entry.to_cbor().to_vec()

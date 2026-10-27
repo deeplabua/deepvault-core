@@ -120,6 +120,11 @@ pub(crate) struct Entry {
     /// stored as it was before.
     #[serde(default, skip_serializing_if = "is_false")]
     pub favorite: bool,
+    /// When the user deleted it (`Vault::trash_entry`): in Recently Deleted until it is
+    /// restored or deleted for good. Left out while 0 (live), so a live entry is stored as it
+    /// was before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub trashed_at: u64,
     pub deleted: bool,
 }
 
@@ -176,6 +181,8 @@ pub struct EntrySummary {
     /// 0: never used.
     pub used_at: u64,
     pub favorite: bool,
+    /// When it went to Recently Deleted; 0: live.
+    pub trashed_at: u64,
 }
 
 impl EntrySummary {
@@ -217,6 +224,7 @@ impl EntrySummary {
             updated_at: entry.updated_at,
             used_at: entry.used_at,
             favorite: entry.favorite,
+            trashed_at: entry.trashed_at,
         }
     }
 }

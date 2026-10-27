@@ -13,7 +13,7 @@ mod common;
 use common::{array, hex, shared, unhex};
 use serde_json::{json, Value};
 use vault::keys::{self, SlotKind, Subkeys};
-use vault::testing::{entry_plaintext, ScriptedEntropy};
+use vault::testing::{entry_plaintext, trashed_entry_plaintext, ScriptedEntropy};
 use vault::{aead, field, kdf, EntryKind, Field, KdfParams, Key, NewEntry, Vault};
 
 const VECTOR: &str = "vectors/v1_sample.json";
@@ -135,6 +135,28 @@ fn intermediate_values_match_the_vector() {
     assert_eq!(outputs.entries_key, expected("entries_key"), "HKDF entries");
     assert_eq!(outputs.entry_plaintext, expected("entry_plaintext"), "entry CBOR");
     assert_eq!(outputs.entry_ciphertext, expected("entry_ciphertext"), "entry block");
+}
+
+/// An entry in Recently Deleted is the same CBOR map with one more key, `trashed_at` (a uint),
+/// before `deleted`; a live entry has no such key, so the v1 vector above stays as it was.
+#[test]
+fn a_trashed_entry_adds_only_its_date() {
+    let vector = read_vector();
+    let inputs = Inputs::from(&vector);
+    let live = entry_plaintext(inputs.new_entry(), inputs.now, inputs.now);
+    assert_eq!(live, unhex(vector["expected"]["entry_plaintext"].as_str().unwrap()));
+    let trashed = trashed_entry_plaintext(inputs.new_entry(), inputs.now, inputs.now, 0x6ad8_0100);
+
+    let deleted_key = b"\x67deleted";
+    let at = live.windows(deleted_key.len()).position(|w| w == deleted_key).unwrap();
+    let mut expected = live.clone();
+    assert_eq!(expected[0], 0xa6, "a map of six keys");
+    expected[0] = 0xa7;
+    let mut key = vec![0x6a];
+    key.extend_from_slice(b"trashed_at");
+    key.extend_from_slice(&[0x1a, 0x6a, 0xd8, 0x01, 0x00]);
+    expected.splice(at..at, key);
+    assert_eq!(trashed, expected);
 }
 
 #[test]

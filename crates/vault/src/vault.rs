@@ -25,6 +25,8 @@ pub struct Vault {
     blocks: Vec<Block>,
     /// Live entries, in block order.
     index: Vec<EntrySummary>,
+    /// Entries in Recently Deleted, in block order: kept whole until restored or deleted for good.
+    trash: Vec<EntrySummary>,
     entropy: Box<dyn Entropy>,
 }
 
@@ -82,7 +84,7 @@ impl Vault {
             slots: vec![SlotHeader { kind: SlotKind::Password.label().into(), nonce, wrapped_vk }],
         };
         let keys = Subkeys::derive(&vk, &vault_id);
-        Ok(Self { header, vk, keys, blocks: Vec::new(), index: Vec::new(), entropy })
+        Ok(Self { header, vk, keys, blocks: Vec::new(), index: Vec::new(), trash: Vec::new(), entropy })
     }
 
     /// Opens a vault file with the master password: tries every password slot with the key
@@ -129,16 +131,31 @@ impl Vault {
         }
 
         let mut index = Vec::new();
+        let mut trash = Vec::new();
         for (position, block) in raw.blocks.iter().enumerate() {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
             let entry = decrypt(&keys, &raw.header.vault_id, block).ok_or(VaultError::Corrupted)?;
-            if !entry.deleted {
-                index.push(EntrySummary::new(block.entry_id, &entry));
+            if entry.deleted {
+                continue;
+            }
+            let summary = EntrySummary::new(block.entry_id, &entry);
+            if entry.trashed_at == 0 {
+                index.push(summary)
+            } else {
+                trash.push(summary)
             }
         }
-        Ok(Self { header: raw.header, vk, keys, blocks: raw.blocks, index, entropy: Box::new(SystemEntropy) })
+        Ok(Self {
+            header: raw.header,
+            vk,
+            keys,
+            blocks: raw.blocks,
+            index,
+            trash,
+            entropy: Box::new(SystemEntropy),
+        })
     }
 
     /// The whole file, ready to be written atomically by the caller.
@@ -232,6 +249,7 @@ impl Vault {
             updated_at: now,
             used_at: 0,
             favorite: false,
+            trashed_at: 0,
             deleted: false,
         };
         self.index.push(EntrySummary::new(id, &entry));
@@ -484,9 +502,68 @@ impl Vault {
             .collect()
     }
 
-    /// Replaces the entry with a tombstone: its kind and dates stay, the content goes.
-    pub fn delete_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+    /// Moves a live entry to Recently Deleted: whole, still sealed, out of `entries` (so out of
+    /// search, AutoFill, the CLI, the SSH agent, passkeys, the audit and exports) and into
+    /// `trashed`. Randomness: nonce (24).
+    pub fn trash_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(id)?;
+        let mut entry =
+            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let now = self.entropy.now();
+        entry.trashed_at = now.max(1);
+        entry.updated_at = now.max(entry.updated_at);
+        self.index.remove(position);
+        self.trash.push(EntrySummary::new(*id, &entry));
+        self.sort_by_block(true);
+        self.blocks[block] = self.seal(*id, &entry);
+        Ok(())
+    }
+
+    /// Brings an entry back from Recently Deleted, as it was. Randomness: nonce (24).
+    pub fn restore_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+        let position = self.trash.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
+        let block = self.block_index(id)?;
+        let mut entry =
+            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        entry.trashed_at = 0;
+        entry.updated_at = self.entropy.now().max(entry.updated_at);
+        self.trash.remove(position);
+        self.index.push(EntrySummary::new(*id, &entry));
+        self.sort_by_block(false);
+        self.blocks[block] = self.seal(*id, &entry);
+        Ok(())
+    }
+
+    /// The entries in Recently Deleted, oldest block first; `trashed_at` says when each went.
+    pub fn trashed(&self) -> &[EntrySummary] {
+        &self.trash
+    }
+
+    /// Deletes for good the entries in Recently Deleted for `older_than` seconds or more (0:
+    /// all of them — «Empty Recently Deleted»). Returns how many went.
+    pub fn purge_trash(&mut self, older_than: u64) -> Result<usize> {
+        let now = self.entropy.now();
+        let due: Vec<[u8; ENTRY_ID_LEN]> = self
+            .trash
+            .iter()
+            .filter(|summary| older_than == 0 || now.saturating_sub(summary.trashed_at) >= older_than)
+            .map(|summary| summary.id)
+            .collect();
+        for id in &due {
+            self.delete_entry(id)?;
+        }
+        Ok(due.len())
+    }
+
+    /// Replaces the entry — live or in Recently Deleted — with a tombstone: its kind and dates
+    /// stay, the content goes. For good.
+    pub fn delete_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
+        let live = self.index.iter().position(|summary| &summary.id == id);
+        let trashed = self.trash.iter().position(|summary| &summary.id == id);
+        if live.is_none() && trashed.is_none() {
+            return Err(VaultError::NotFound);
+        }
         let block = self.block_index(id)?;
         let old =
             decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
@@ -498,10 +575,16 @@ impl Vault {
             updated_at: self.entropy.now(),
             used_at: 0,
             favorite: false,
+            trashed_at: 0,
             deleted: true,
         };
         self.blocks[block] = self.seal(*id, &tombstone);
-        self.index.remove(position);
+        if let Some(position) = live {
+            self.index.remove(position);
+        }
+        if let Some(position) = trashed {
+            self.trash.remove(position);
+        }
         Ok(())
     }
 
@@ -520,6 +603,7 @@ impl Vault {
             updated_at: self.entropy.now().max(old.updated_at),
             used_at: old.used_at,
             favorite: old.favorite,
+            trashed_at: 0,
             deleted: false,
         };
         self.index[position] = EntrySummary::new(*id, &entry);
@@ -541,23 +625,24 @@ impl Vault {
         Ok(())
     }
 
-    /// The fields of a live entry, in order, without concealed values.
+    /// The fields of an entry — live or in Recently Deleted — in order, without concealed values.
     pub fn fields(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<Vec<FieldSummary>> {
-        let entry = self.live(id)?;
+        let entry = self.readable(id)?;
         Ok(entry.fields.iter().map(FieldSummary::new).collect())
     }
 
-    /// The field at `index` (as `fields` lists them) of a live entry, decrypted for this call
-    /// only. For entries with several fields of one name (sites, notes).
+    /// The field at `index` (as `fields` lists them) of an entry — live or in Recently Deleted,
+    /// to be looked at before it is restored — decrypted for this call only. For entries with
+    /// several fields of one name (sites, notes).
     pub fn secret_at(&self, id: &[u8; ENTRY_ID_LEN], index: usize) -> Result<SecretBytes> {
-        let entry = self.live(id)?;
+        let entry = self.readable(id)?;
         let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
         Ok(SecretBytes::new(field.value.clone()))
     }
 
     /// How strong the field at `index` is (a password): rated here, so it never leaves the core.
     pub fn strength(&self, id: &[u8; ENTRY_ID_LEN], index: usize) -> Result<crate::strength::Strength> {
-        let entry = self.live(id)?;
+        let entry = self.readable(id)?;
         let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
         let text = std::str::from_utf8(&field.value).map_err(|_| VaultError::NotFound)?;
         Ok(crate::strength::estimate(text))
@@ -632,9 +717,10 @@ impl Vault {
         items
     }
 
-    /// The one-time code of the TOTP field at `index` at `unix_time`. The secret stays here.
+    /// The one-time code of the TOTP field at `index` at `unix_time` (of an entry live or in
+    /// Recently Deleted). The secret stays here.
     pub fn totp(&self, id: &[u8; ENTRY_ID_LEN], index: usize, unix_time: u64) -> Result<crate::TotpCode> {
-        let entry = self.live(id)?;
+        let entry = self.readable(id)?;
         let field = entry.fields.get(index).ok_or(VaultError::NotFound)?;
         crate::totp::code(&field.value, unix_time)
     }
@@ -661,6 +747,23 @@ impl Vault {
         }
         let block = &self.blocks[self.block_index(id)?];
         decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)
+    }
+
+    /// An entry that is live or in Recently Deleted, decrypted; for reading only.
+    fn readable(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<Entry> {
+        if !self.trash.iter().any(|summary| &summary.id == id) {
+            return self.live(id);
+        }
+        let block = &self.blocks[self.block_index(id)?];
+        decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)
+    }
+
+    /// Puts the live entries (or those in Recently Deleted) back in block order.
+    fn sort_by_block(&mut self, trash: bool) {
+        let order: std::collections::HashMap<[u8; ENTRY_ID_LEN], usize> =
+            self.blocks.iter().enumerate().map(|(position, block)| (block.entry_id, position)).collect();
+        let list = if trash { &mut self.trash } else { &mut self.index };
+        list.sort_by_key(|summary| order.get(&summary.id).copied().unwrap_or(usize::MAX));
     }
 
     fn block_index(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<usize> {

@@ -394,6 +394,66 @@ fn a_deleted_entry_leaves_a_tombstone() {
 }
 
 #[test]
+fn a_trashed_entry_waits_in_recently_deleted_and_comes_back_as_it_was() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let first = vault.add_entry(login("First", "a"));
+    let trashed = vault.add_entry(login("Trashed", "b"));
+    let last = vault.add_entry(login("Last", "c"));
+    vault.set_favorite(&trashed, true).unwrap();
+    let created = vault.entries()[1].created_at;
+
+    vault.trash_entry(&trashed).unwrap();
+    assert_eq!(vault.entries().iter().map(|e| e.id).collect::<Vec<_>>(), [first, last]);
+    assert_eq!(vault.trashed().len(), 1);
+    assert!(vault.trashed()[0].trashed_at > 0);
+    // Out of everything that serves a secret; still readable for the card.
+    assert_eq!(vault.secret(&trashed, field::PASSWORD).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.update_entry(&trashed, login("x", "y")).err(), Some(VaultError::NotFound));
+    assert_eq!(vault.trash_entry(&trashed).err(), Some(VaultError::NotFound));
+    let index = vault.fields(&trashed).unwrap().iter().position(|f| f.name == field::PASSWORD).unwrap();
+    assert_eq!(vault.secret_at(&trashed, index).unwrap().expose(), b"b");
+
+    let mut reopened = open(&vault.to_bytes()).unwrap();
+    assert_eq!(reopened.entries().len(), 2);
+    assert_eq!(reopened.trashed()[0].title, "Trashed");
+    assert_eq!(reopened.trashed()[0].trashed_at, vault.trashed()[0].trashed_at);
+
+    reopened.restore_entry(&trashed).unwrap();
+    assert!(reopened.trashed().is_empty());
+    // Back in its place, with its date and star.
+    let back = open(&reopened.to_bytes()).unwrap();
+    assert_eq!(back.entries().iter().map(|e| e.id).collect::<Vec<_>>(), [first, trashed, last]);
+    assert_eq!(back.entries()[1].created_at, created);
+    assert_eq!(back.entries()[1].trashed_at, 0);
+    assert!(back.entries()[1].favorite);
+    assert_eq!(back.secret(&trashed, field::PASSWORD).unwrap().expose(), b"b");
+    assert_eq!(reopened.restore_entry(&trashed).err(), Some(VaultError::NotFound));
+}
+
+#[test]
+fn recently_deleted_is_emptied_for_good() {
+    let mut vault = Vault::create(PASSWORD, PARAMS).unwrap();
+    let old = vault.add_entry(login("Old", "a"));
+    let kept = vault.add_entry(login("Kept", "b"));
+    let now = vault.add_entry(login("Now", "c"));
+    vault.trash_entry(&old).unwrap();
+    vault.trash_entry(&now).unwrap();
+
+    // Nothing has waited 30 days yet.
+    assert_eq!(vault.purge_trash(30 * 24 * 60 * 60).unwrap(), 0);
+    assert_eq!(vault.trashed().len(), 2);
+
+    // Delete Now… on one, then Empty Recently Deleted.
+    vault.delete_entry(&old).unwrap();
+    assert_eq!(vault.trashed().len(), 1);
+    assert_eq!(vault.purge_trash(0).unwrap(), 1);
+    let reopened = open(&vault.to_bytes()).unwrap();
+    assert!(reopened.trashed().is_empty());
+    assert_eq!(reopened.entries().iter().map(|e| e.id).collect::<Vec<_>>(), [kept]);
+    assert_eq!(reopened.fields(&now).err(), Some(VaultError::NotFound));
+}
+
+#[test]
 fn nothing_is_written_in_the_clear() {
     let file = sample();
     let contains = |needle: &[u8]| file.windows(needle.len()).any(|window| window == needle);
