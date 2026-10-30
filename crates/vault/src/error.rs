@@ -12,6 +12,9 @@ pub enum VaultError {
     Corrupted,
     /// A vault written by a newer DeepVault.
     UnsupportedVersion(u16),
+    /// Entries that authenticate but that this core cannot read: written by a newer DeepVault
+    /// (a field added since, `Entry` refuses unknown fields), not damage. Update the app.
+    NewerEntries,
     /// KDF parameters below the minimum or above the maximum (`KdfParams::check`).
     InvalidKdfParams,
     /// A key handed in from outside (a device key) that is not 32 bytes.
@@ -38,6 +41,7 @@ impl fmt::Display for VaultError {
             Self::WrongPassword => f.write_str("wrong password"),
             Self::Corrupted => f.write_str("the vault file is damaged or was modified"),
             Self::UnsupportedVersion(version) => write!(f, "unsupported vault format version {version}"),
+            Self::NewerEntries => f.write_str("entries written by a newer DeepVault"),
             Self::InvalidKdfParams => f.write_str("KDF parameters out of the allowed range"),
             Self::InvalidKey => f.write_str("a key must be 32 bytes"),
             Self::NotFound => f.write_str("no such entry or field"),

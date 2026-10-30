@@ -149,7 +149,7 @@ impl Vault {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&keys, &raw.header.vault_id, block).ok_or(VaultError::Corrupted)?;
+            let entry = decrypt(&keys, &raw.header.vault_id, block)?;
             if entry.deleted {
                 continue;
             }
@@ -189,7 +189,7 @@ impl Vault {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)?;
+            let entry = decrypt(&self.keys, &self.header.vault_id, block)?;
             if entry.deleted {
                 continue;
             }
@@ -256,8 +256,7 @@ impl Vault {
     pub fn set_favorite(&mut self, id: &[u8; ENTRY_ID_LEN], favorite: bool) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         entry.favorite = favorite;
         self.index[position] = EntrySummary::new(*id, &entry);
         self.blocks[block] = self.seal(*id, &entry);
@@ -558,8 +557,7 @@ impl Vault {
     pub fn trash_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         let now = self.entropy.now();
         entry.trashed_at = now.max(1);
         entry.updated_at = now.max(entry.updated_at);
@@ -574,8 +572,7 @@ impl Vault {
     pub fn restore_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.trash.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         entry.trashed_at = 0;
         entry.updated_at = self.entropy.now().max(entry.updated_at);
         self.trash.remove(position);
@@ -615,8 +612,7 @@ impl Vault {
             return Err(VaultError::NotFound);
         }
         let block = self.block_index(id)?;
-        let old =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let old = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         let tombstone = Entry {
             kind: old.kind,
             title: String::new(),
@@ -857,8 +853,7 @@ impl Vault {
     pub fn update_entry(&mut self, id: &[u8; ENTRY_ID_LEN], new: NewEntry) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let old =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let old = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         let entry = Entry {
             kind: new.kind,
             title: new.title,
@@ -881,8 +876,7 @@ impl Vault {
     pub fn mark_used(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry =
-            decrypt(&self.keys, &self.header.vault_id, &self.blocks[block]).ok_or(VaultError::Corrupted)?;
+        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
         entry.used_at = self.entropy.now().max(entry.used_at);
         self.index[position] = EntrySummary::new(*id, &entry);
         self.blocks[block] = self.seal(*id, &entry);
@@ -1041,7 +1035,7 @@ impl Vault {
             return Err(VaultError::NotFound);
         }
         let block = &self.blocks[self.block_index(id)?];
-        decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)
+        decrypt(&self.keys, &self.header.vault_id, block)
     }
 
     /// An entry that is live or in Recently Deleted, decrypted; for reading only.
@@ -1050,7 +1044,7 @@ impl Vault {
             return self.live(id);
         }
         let block = &self.blocks[self.block_index(id)?];
-        decrypt(&self.keys, &self.header.vault_id, block).ok_or(VaultError::Corrupted)
+        decrypt(&self.keys, &self.header.vault_id, block)
     }
 
     /// Puts the live entries (or those in Recently Deleted) back in block order.
@@ -1140,10 +1134,14 @@ impl Comparable {
     }
 }
 
-fn decrypt(keys: &Subkeys, vault_id: &[u8; VAULT_ID_LEN], block: &Block) -> Option<Entry> {
+/// A block that does not authenticate is damaged; one that does but is no entry this core
+/// reads was written, with this vault's key, by a newer DeepVault (a field added since): only
+/// that writer could have made it, and an older one must not rewrite what it cannot read.
+fn decrypt(keys: &Subkeys, vault_id: &[u8; VAULT_ID_LEN], block: &Block) -> Result<Entry> {
     let aad = keys::aad("entry", vault_id, &block.entry_id);
-    let plaintext = aead::open(&keys.entries, &block.nonce, &block.ciphertext, &aad)?;
-    Entry::from_cbor(plaintext.expose())
+    let plaintext =
+        aead::open(&keys.entries, &block.nonce, &block.ciphertext, &aad).ok_or(VaultError::Corrupted)?;
+    Entry::from_cbor(plaintext.expose()).ok_or(VaultError::NewerEntries)
 }
 
 /// What the header must say before its KDF is run. A header that fails here is damaged (or
@@ -1159,4 +1157,42 @@ fn validate(header: &Header) -> Result<KdfParams> {
         return Err(VaultError::Corrupted);
     }
     Ok(params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vault_with_one_entry() -> Vault {
+        let mut vault = Vault::create(b"pw", KdfParams::MINIMUM).expect("vault");
+        vault.add_entry(NewEntry { kind: EntryKind::Note, title: "note".into(), fields: Vec::new() });
+        vault
+    }
+
+    /// An entry a newer DeepVault wrote — sealed with this vault's key, with a field this core
+    /// does not know — is «update the app», not «damaged»: an older app reading a file the
+    /// newer one saved (Recently Deleted's `trashed_at`, 30 October) told the person it was broken.
+    #[test]
+    fn an_entry_with_a_field_added_later_is_newer_not_damaged() {
+        let mut vault = vault_with_one_entry();
+        let block = &vault.blocks[0];
+        let aad = keys::aad("entry", &vault.header.vault_id, &block.entry_id);
+        let plain = aead::open(&vault.keys.entries, &block.nonce, &block.ciphertext, &aad).expect("opens");
+        let mut value: ciborium::Value = ciborium::from_reader(plain.expose()).expect("cbor");
+        if let ciborium::Value::Map(fields) = &mut value {
+            fields.push((ciborium::Value::Text("added_later".into()), ciborium::Value::Integer(1.into())));
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).expect("cbor");
+        let sealed = aead::seal(&vault.keys.entries, &block.nonce, &bytes, &aad);
+        vault.blocks[0].ciphertext = sealed;
+        assert_eq!(Vault::open(&vault.to_bytes(), b"pw").err(), Some(VaultError::NewerEntries));
+
+        // A changed byte in a block is still damage.
+        let mut damaged = vault_with_one_entry();
+        let last = damaged.blocks[0].ciphertext.len() - 1;
+        damaged.blocks[0].ciphertext[last] ^= 1;
+        let file = damaged.to_bytes();
+        assert_eq!(Vault::open(&file, b"pw").err(), Some(VaultError::Corrupted));
+    }
 }
