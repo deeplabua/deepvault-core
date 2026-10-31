@@ -33,6 +33,7 @@ fn words() -> &'static [&'static str] {
 pub struct PasswordOptions {
     /// 8 to 64.
     pub length: u32,
+    pub lowercase: bool,
     pub uppercase: bool,
     pub digits: bool,
     pub symbols: bool,
@@ -46,6 +47,7 @@ impl Default for PasswordOptions {
     fn default() -> Self {
         Self {
             length: 20,
+            lowercase: true,
             uppercase: true,
             digits: true,
             symbols: true,
@@ -73,6 +75,23 @@ impl Default for PassphraseOptions {
     }
 }
 
+/// A PIN of digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinOptions {
+    /// 4 to 20.
+    pub length: u32,
+    /// No digit twice in a row (`1123`).
+    pub no_repeats: bool,
+    /// No run of three digits up or down (`123`, `987`).
+    pub no_sequences: bool,
+}
+
+impl Default for PinOptions {
+    fn default() -> Self {
+        Self { length: 6, no_repeats: false, no_sequences: false }
+    }
+}
+
 /// Generated text and the bits of randomness in it.
 pub struct Generated {
     pub text: Zeroizing<String>,
@@ -86,7 +105,10 @@ pub fn password(entropy: &mut dyn Entropy, options: PasswordOptions) -> Result<G
     let keep = |set: &str| -> Vec<char> {
         set.chars().filter(|c| !(options.avoid_similar && SIMILAR.contains(*c))).collect()
     };
-    let mut sets = vec![keep(LOWER)];
+    let mut sets = Vec::new();
+    if options.lowercase {
+        sets.push(keep(LOWER));
+    }
     if options.uppercase {
         sets.push(keep(UPPER));
     }
@@ -95,6 +117,9 @@ pub fn password(entropy: &mut dyn Entropy, options: PasswordOptions) -> Result<G
     }
     if options.symbols {
         sets.push(keep(SYMBOLS));
+    }
+    if sets.is_empty() {
+        return Err(VaultError::InvalidGeneratorOptions);
     }
     let alphabet: Vec<char> = sets.concat();
     let length = options.length as usize;
@@ -166,14 +191,69 @@ pub fn passphrase(entropy: &mut dyn Entropy, options: PassphraseOptions) -> Resu
 }
 
 pub fn pin(entropy: &mut dyn Entropy, length: u32) -> Result<Generated> {
-    if !(4..=20).contains(&length) {
+    pin_with(entropy, PinOptions { length, ..PinOptions::default() })
+}
+
+/// A PIN uniform over those the options allow: drawn whole and drawn again when it breaks a
+/// rule (with 20 digits and both rules about one draw in eight passes). The bits are of the
+/// PINs allowed, counted exactly.
+pub fn pin_with(entropy: &mut dyn Entropy, options: PinOptions) -> Result<Generated> {
+    if !(4..=20).contains(&options.length) {
         return Err(VaultError::InvalidGeneratorOptions);
     }
-    let mut text = Zeroizing::new(String::with_capacity(length as usize));
-    for _ in 0..length {
-        text.push(char::from(b'0' + uniform(entropy, 10) as u8));
+    let length = options.length as usize;
+    let mut digits = Zeroizing::new(vec![0u8; length]);
+    loop {
+        for digit in digits.iter_mut() {
+            *digit = uniform(entropy, 10) as u8;
+        }
+        if pin_allowed(&digits, options) {
+            break;
+        }
     }
-    Ok(Generated { text, bits: f64::from(length) * 10f64.log2() })
+    let text = Zeroizing::new(digits.iter().map(|d| char::from(b'0' + d)).collect::<String>());
+    Ok(Generated { text, bits: pins_allowed(options).log2() })
+}
+
+fn pin_allowed(digits: &[u8], options: PinOptions) -> bool {
+    let repeat = options.no_repeats && digits.windows(2).any(|w| w[0] == w[1]);
+    let run = options.no_sequences
+        && digits.windows(3).any(|w| {
+            let (a, b, c) = (i16::from(w[0]), i16::from(w[1]), i16::from(w[2]));
+            b - a == c - b && (b - a).abs() == 1
+        });
+    !repeat && !run
+}
+
+/// How many PINs of the length the rules allow: by the last two digits, one place at a time.
+fn pins_allowed(options: PinOptions) -> f64 {
+    // ways[a][b]: allowed prefixes ending in digits a, b.
+    let mut ways = [[0f64; 10]; 10];
+    for a in 0..10u8 {
+        for b in 0..10u8 {
+            if pin_allowed(&[a, b], options) {
+                ways[a as usize][b as usize] = 1.0;
+            }
+        }
+    }
+    for _ in 2..options.length {
+        let mut next = [[0f64; 10]; 10];
+        for a in 0..10u8 {
+            for b in 0..10u8 {
+                let count = ways[a as usize][b as usize];
+                if count == 0.0 {
+                    continue;
+                }
+                for c in 0..10u8 {
+                    if pin_allowed(&[a, b, c], options) {
+                        next[b as usize][c as usize] += count;
+                    }
+                }
+            }
+        }
+        ways = next;
+    }
+    ways.iter().flatten().sum()
 }
 
 /// A uniform index below `bound` (at most 2^32): rejection sampling over 32-bit draws.
@@ -220,6 +300,7 @@ mod tests {
         }
         let plain = PasswordOptions {
             length: 30,
+            lowercase: true,
             uppercase: false,
             digits: false,
             symbols: false,
@@ -244,6 +325,7 @@ mod tests {
         // 26 lower-case letters cannot fill 30 places without a repeat.
         let too_long = PasswordOptions {
             length: 30,
+            lowercase: true,
             uppercase: false,
             digits: false,
             symbols: false,
@@ -296,6 +378,56 @@ mod tests {
         assert_eq!(pin(&mut entropy, 20).unwrap().text.len(), 20);
     }
 
+    #[test]
+    fn lower_case_can_be_left_out() {
+        let mut entropy = SystemEntropy;
+        let options = PasswordOptions { length: 16, lowercase: false, symbols: false, ..Default::default() };
+        for _ in 0..200 {
+            let text = password(&mut entropy, options).unwrap().text;
+            assert!(text.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+        }
+        let nothing = PasswordOptions {
+            lowercase: false,
+            uppercase: false,
+            digits: false,
+            symbols: false,
+            ..Default::default()
+        };
+        assert_eq!(password(&mut entropy, nothing).err(), Some(VaultError::InvalidGeneratorOptions));
+    }
+
+    #[test]
+    fn pins_keep_their_rules_and_count_what_they_allow() {
+        let mut entropy = SystemEntropy;
+        let strict = PinOptions { length: 8, no_repeats: true, no_sequences: true };
+        for _ in 0..500 {
+            let text = pin_with(&mut entropy, strict).unwrap().text;
+            let d: Vec<i16> = text.bytes().map(|b| i16::from(b - b'0')).collect();
+            assert!(d.windows(2).all(|w| w[0] != w[1]), "{}", text.as_str());
+            assert!(d.windows(3).all(|w| !(w[1] - w[0] == w[2] - w[1] && (w[1] - w[0]).abs() == 1)));
+        }
+        // No repeats: 10 · 9^(n−1).
+        let repeats = PinOptions { length: 6, no_repeats: true, no_sequences: false };
+        assert!((pin_with(&mut entropy, repeats).unwrap().bits - (10.0 * 9f64.powi(5)).log2()).abs() < 1e-9);
+        // No rules: 10^n, as `pin`.
+        assert!(
+            (pin_with(&mut entropy, PinOptions::default()).unwrap().bits - 6.0 * 10f64.log2()).abs() < 1e-9
+        );
+        // Runs of three over 4 digits, by brute force.
+        let runs = PinOptions { length: 4, no_repeats: false, no_sequences: true };
+        let allowed = (0..10_000u32)
+            .filter(|n| {
+                let d: Vec<u8> = format!("{n:04}").bytes().map(|b| b - b'0').collect();
+                pin_allowed(&d, runs)
+            })
+            .count();
+        assert!((pins_allowed(runs) - allowed as f64).abs() < 1e-9);
+        assert_eq!(
+            pin_with(&mut entropy, PinOptions { length: 21, ..strict }).err(),
+            Some(VaultError::InvalidGeneratorOptions)
+        );
+    }
+
     /// Every symbol of a small alphabet comes up about equally often: a `%` without rejection
     /// would show here as a skew towards the first symbols. 26 lower-case letters, 520 000 draws.
     #[test]
@@ -305,6 +437,7 @@ mod tests {
         for _ in 0..20_000 {
             let options = PasswordOptions {
                 length: 26,
+                lowercase: true,
                 uppercase: false,
                 digits: false,
                 symbols: false,
