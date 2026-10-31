@@ -51,6 +51,10 @@ pub mod field {
     /// lowercase hex digits (`Vault::mark_distinct`; repeated, on both entries; not concealed:
     /// in the index, so the audit does not offer the pair as duplicates).
     pub const DISTINCT: &str = "distinct";
+    /// Changes not confirmed (the app kept them on a lock or quit instead of writing them over
+    /// the entry): this entry is a copy of the one with this id, 32 lowercase hex digits, or of
+    /// a new one when empty. Not concealed: in the index, so lists and the audit leave it out.
+    pub const UNSAVED: &str = "unsaved";
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,
@@ -189,6 +193,9 @@ pub struct EntrySummary {
     pub favorite: bool,
     /// When it went to Recently Deleted; 0: live.
     pub trashed_at: u64,
+    /// Changes not confirmed (`field::UNSAVED`): the entry this is a copy of, `Some("")` for a
+    /// new one; `None` for an entry of its own.
+    pub unsaved_of: Option<String>,
 }
 
 impl EntrySummary {
@@ -237,6 +244,7 @@ impl EntrySummary {
             used_at: entry.used_at,
             favorite: entry.favorite,
             trashed_at: entry.trashed_at,
+            unsaved_of: visible(field::UNSAVED),
         }
     }
 }

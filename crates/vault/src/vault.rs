@@ -963,7 +963,9 @@ impl Vault {
         let mut items = Vec::new();
         let mut values: Vec<Zeroizing<Vec<u8>>> = Vec::new();
         for summary in &self.index {
-            if !matches!(summary.kind, EntryKind::Login | EntryKind::Password) {
+            // Changes not confirmed are a copy of an entry's password, not a reuse of it.
+            if !matches!(summary.kind, EntryKind::Login | EntryKind::Password) || summary.unsaved_of.is_some()
+            {
                 continue;
             }
             let Ok(entry) = self.live(&summary.id) else { continue };
@@ -1194,5 +1196,48 @@ mod tests {
         damaged.blocks[0].ciphertext[last] ^= 1;
         let file = damaged.to_bytes();
         assert_eq!(Vault::open(&file, b"pw").err(), Some(VaultError::Corrupted));
+    }
+
+    /// Changes kept instead of written over an entry: the copy says whose it is (an empty id
+    /// for a new entry), survives a save, and is not a reused password in the audit. A field
+    /// of the user's own named so is only a label.
+    #[test]
+    fn an_unsaved_copy_says_whose_it_is_and_is_not_a_reuse() {
+        let field = |name: &str, value: &str, custom: bool| Field {
+            name: name.into(),
+            value: value.as_bytes().to_vec(),
+            concealed: name == field::PASSWORD,
+            custom,
+        };
+        let mut vault = Vault::create(b"pw", KdfParams::MINIMUM).expect("vault");
+        let original = vault.add_entry(NewEntry {
+            kind: EntryKind::Login,
+            title: "site".into(),
+            fields: vec![field(field::PASSWORD, "hunter2-long-enough", false)],
+        });
+        let of = original.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        vault.add_entry(NewEntry {
+            kind: EntryKind::Login,
+            title: "site".into(),
+            fields: vec![
+                field(field::PASSWORD, "hunter2-long-enough", false),
+                field(field::UNSAVED, &of, false),
+            ],
+        });
+        vault.add_entry(NewEntry {
+            kind: EntryKind::Note,
+            title: "new".into(),
+            fields: vec![field(field::UNSAVED, "", false)],
+        });
+        vault.add_entry(NewEntry {
+            kind: EntryKind::Note,
+            title: "mine".into(),
+            fields: vec![field(field::UNSAVED, "x", true)],
+        });
+
+        let reopened = Vault::open(&vault.to_bytes(), b"pw").expect("opens");
+        let marks: Vec<Option<String>> = reopened.entries().iter().map(|e| e.unsaved_of.clone()).collect();
+        assert_eq!(marks, vec![None, Some(of), Some(String::new()), None]);
+        assert!(reopened.audit().iter().all(|item| item.reused.is_none()));
     }
 }
