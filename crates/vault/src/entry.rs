@@ -55,6 +55,14 @@ pub mod field {
     /// the entry): this entry is a copy of the one with this id, 32 lowercase hex digits, or of
     /// a new one when empty. Not concealed: in the index, so lists and the audit leave it out.
     pub const UNSAVED: &str = "unsaved";
+    /// A value the entry had before (`Vault::update_entry` keeps it when the password or the
+    /// one-time code changes): `<field name>\n<seconds since the Unix epoch>\n<value>`,
+    /// concealed; the last `HISTORY_LEN` of each field, oldest first.
+    pub const PREVIOUS: &str = "previous";
+    /// How many earlier values of a field an entry keeps.
+    pub const HISTORY_LEN: usize = 10;
+    /// The fields whose earlier values are kept.
+    pub const KEPT_HISTORY: [&str; 2] = [PASSWORD, TOTP];
 }
 
 /// Stored by name (`login`, `password`, `note`, `card`, `bank_account`,

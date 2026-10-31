@@ -854,10 +854,12 @@ impl Vault {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
         let old = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let mut fields = new.fields;
+        keep_history(&old.fields, &mut fields, self.entropy.now());
         let entry = Entry {
             kind: new.kind,
             title: new.title,
-            fields: new.fields,
+            fields,
             created_at: old.created_at,
             updated_at: self.entropy.now().max(old.updated_at),
             used_at: old.used_at,
@@ -1161,6 +1163,41 @@ fn validate(header: &Header) -> Result<KdfParams> {
     Ok(params)
 }
 
+/// The password or one-time code changed (or went): its value before is kept as a
+/// `field::PREVIOUS`, dated `now`; past `HISTORY_LEN` of a field the oldest go. The earlier ones
+/// come in `new` as the app read them (its draft keeps fields it does not show).
+fn keep_history(old: &[Field], new: &mut Vec<Field>, now: u64) {
+    let known = |fields: &[Field], name: &str| -> Option<Vec<u8>> {
+        fields.iter().find(|field| !field.custom && field.name == name).map(|field| field.value.clone())
+    };
+    for name in field::KEPT_HISTORY {
+        let before = Zeroizing::new(known(old, name).unwrap_or_default());
+        let after = Zeroizing::new(known(new, name).unwrap_or_default());
+        if before.is_empty() || before == after {
+            continue;
+        }
+        let mut value = format!("{name}\n{now}\n").into_bytes();
+        value.extend_from_slice(&before);
+        new.push(Field { name: field::PREVIOUS.into(), value, concealed: true, custom: false });
+    }
+    for name in field::KEPT_HISTORY {
+        let prefix = format!("{name}\n");
+        let of_name: Vec<usize> = new
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| {
+                !field.custom && field.name == field::PREVIOUS && field.value.starts_with(prefix.as_bytes())
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let extra = of_name.len().saturating_sub(field::HISTORY_LEN);
+        for index in of_name.into_iter().take(extra).rev() {
+            // A field is zeroed on drop.
+            drop(new.remove(index));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1233,77 @@ mod tests {
         damaged.blocks[0].ciphertext[last] ^= 1;
         let file = damaged.to_bytes();
         assert_eq!(Vault::open(&file, b"pw").err(), Some(VaultError::Corrupted));
+    }
+
+    /// A password or one-time code changed keeps the value before, dated, the last ten of each;
+    /// a save that leaves them as they were keeps nothing new.
+    #[test]
+    fn the_values_before_a_change_are_kept_ten_of_each() {
+        let field = |name: &str, value: &str| Field {
+            name: name.into(),
+            value: value.as_bytes().to_vec(),
+            concealed: true,
+            custom: false,
+        };
+        let mut vault = Vault::create(b"pw", KdfParams::MINIMUM).expect("vault");
+        let id = vault.add_entry(NewEntry {
+            kind: EntryKind::Login,
+            title: "router".into(),
+            fields: vec![field(field::PASSWORD, "first")],
+        });
+        // As the app saves: the fields it shows, then the ones it kept (`others`).
+        let save = |vault: &mut Vault, password: &str, totp: Option<&str>| {
+            let kept: Vec<Field> = vault
+                .readable(&id)
+                .expect("entry")
+                .fields
+                .iter()
+                .filter(|f| f.name == field::PREVIOUS)
+                .map(|f| Field {
+                    name: f.name.clone(),
+                    value: f.value.clone(),
+                    concealed: true,
+                    custom: false,
+                })
+                .collect();
+            let mut fields = vec![field(field::PASSWORD, password)];
+            fields.extend(totp.map(|code| field(field::TOTP, code)));
+            fields.extend(kept);
+            vault
+                .update_entry(&id, NewEntry { kind: EntryKind::Login, title: "router".into(), fields })
+                .expect("update");
+        };
+        let history = |vault: &Vault| -> Vec<String> {
+            vault
+                .readable(&id)
+                .expect("entry")
+                .fields
+                .iter()
+                .filter(|f| f.name == field::PREVIOUS)
+                .map(|f| {
+                    let text = String::from_utf8(f.value.clone()).expect("utf-8");
+                    let mut parts = text.splitn(3, '\n');
+                    let (name, when, value) =
+                        (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+                    assert!(when.parse::<u64>().is_ok());
+                    format!("{name}:{value}")
+                })
+                .collect()
+        };
+        save(&mut vault, "first", None);
+        assert!(history(&vault).is_empty());
+        save(&mut vault, "second", Some("JBSWY3DPEHPK3PXP"));
+        assert_eq!(history(&vault), ["password:first"]);
+        save(&mut vault, "second", None);
+        assert_eq!(history(&vault), ["password:first", "totp:JBSWY3DPEHPK3PXP"]);
+        for n in 0..12 {
+            save(&mut vault, &format!("p{n}"), None);
+        }
+        let kept = history(&vault);
+        let passwords: Vec<&String> = kept.iter().filter(|h| h.starts_with("password:")).collect();
+        assert_eq!(passwords.len(), field::HISTORY_LEN);
+        assert_eq!(passwords.last().map(|s| s.as_str()), Some("password:p10"));
+        assert!(kept.contains(&"totp:JBSWY3DPEHPK3PXP".to_string()));
     }
 
     /// Changes kept instead of written over an entry: the copy says whose it is (an empty id
