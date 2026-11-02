@@ -27,6 +27,19 @@ entry ─CBOR─► XChaCha20-Poly1305(K_entries, random 24-byte nonce,
 
 The file layout is documented in [`crates/vault/src/format.rs`](crates/vault/src/format.rs).
 
+## Format v2: files outside the vault file
+
+A v2 vault is a package — `Name.dvault/vault` (laid out as v1, `version = 2`) and `files/<id>`,
+one file per attachment (ADR-0014 in the app repo). An entry keeps a `file` field: the file's id,
+name, size, SHA-256 and a random 32-byte key of its own. The file is sealed in chunks of 1 MiB
+with XChaCha20-Poly1305 by the STREAM construction (`nonce = prefix ‖ u32be(counter) ‖ last`),
+so a save writes only the vault file, and a file is read and written piece by piece
+([`crates/vault/src/file.rs`](crates/vault/src/file.rs)). `Vault::upgrade` moves a v1 vault
+(attachments inside entries) to v2; v1 files keep opening. A vault in one file — a backup — is a
+pack: the vault file, its files and a MAC over all of it
+([`crates/vault/src/pack.rs`](crates/vault/src/pack.rs)). Key slots keep their v1 AAD, so the move
+needs no password and Touch ID's slot keeps working.
+
 ## Entries
 
 An entry is a kind (`login`, `password`, `note`, `card`, `bank_account`, `software_license`), a
@@ -57,7 +70,7 @@ choice uniform (rejection sampling, no modulo bias). Passphrases use the
 
 | Path | What |
 |---|---|
-| `crates/vault` | The format and keys: `kdf`, `aead`, `keys`, `format`, `entry`, `vault` |
+| `crates/vault` | The format and keys: `kdf`, `aead`, `keys`, `format`, `entry`, `vault`, `file`, `pack` |
 | `tests/vectors` | Test vectors per format version + an independent Python check |
 | `tests/fixtures` | Committed vault files that every later version must keep opening |
 
@@ -69,6 +82,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ./check-deps.sh                     # no network crates linked into the library
 python3 tests/vectors/check_v1.py tests/vectors/v1_sample.json tests/fixtures/v1_sample.dvault
+python3 tests/vectors/check_v2.py tests/vectors/v2_sample.json tests/vectors/v2_sample.dvault
 ```
 
 ## Dependencies

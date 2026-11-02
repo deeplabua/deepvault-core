@@ -144,7 +144,9 @@ fn an_export_comes_back_with_every_kind() {
         fields: vec![f("STRIPE_KEY", "sk_test_1", true, true), f(field::SHELL, "STRIPE_KEY", false, false)],
     });
     let password: &[u8] = b"export-pass";
-    let file = vault.export_kdbx(&Key { password: Some(password), key_file: None }).unwrap();
+    let file = vault
+        .export_kdbx(&Key { password: Some(password), key_file: None }, &mut |_| Err(VaultError::NotFound))
+        .unwrap();
     let imported = kdbx::read(&file, &Key { password: Some(password), key_file: None }).unwrap();
     assert_eq!(imported.entries.len(), 3);
     let shop = imported.entries.iter().find(|e| e.title == "Shop & Co <test>").unwrap();
@@ -166,37 +168,45 @@ fn an_export_comes_back_with_every_kind() {
     assert!(stripe.fields.iter().any(|f| f.name == field::SHELL && !f.custom));
 }
 
-/// A file over 10 MiB stays out of the import, named in `files_skipped`; the entry and its
-/// other files come in.
+/// A v2 vault's files go into a KeePass export read from `files/` (here: a map), each one
+/// whole; a file not there (not synced yet) is left out and the entry still goes. An 11 MiB
+/// file comes back from the import: only files over 2 GB are left out now.
 #[test]
-fn a_file_over_ten_mib_is_left_out_and_named() {
+fn a_v2_vaults_files_are_read_for_the_export_and_come_back() {
     let mut vault = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
-    let file = |name: &str, size: usize| {
-        let mut value = format!("{name}\0").into_bytes();
-        value.resize(value.len() + size, 7);
-        Field { name: "attachment".into(), value, concealed: true, custom: false }
+    let mut on_disk = std::collections::HashMap::new();
+    let mut add = |vault: &mut Vault, name: &str, content: &[u8]| {
+        let mut writer = vault.file_writer(name);
+        let mut bytes = writer.header();
+        bytes.extend(writer.update(content).unwrap());
+        let (last, file) = writer.finish().unwrap();
+        bytes.extend(last);
+        on_disk.insert(file.id, bytes);
+        file
     };
-    vault.add_entry(NewEntry {
-        kind: EntryKind::Login,
-        title: "Scans".into(),
-        fields: vec![
-            file("big.iso", vault::import::ATTACHMENT_MAX_BYTES + 1),
-            file("edge.pdf", vault::import::ATTACHMENT_MAX_BYTES),
-            file("small.txt", 3),
-        ],
-    });
+    let big = vec![7u8; 11 * 1024 * 1024];
+    let scan = add(&mut vault, "big.iso", &big);
+    let note = add(&mut vault, "small.txt", b"abc");
+    let id = vault.add_entry(NewEntry { kind: EntryKind::Login, title: "Scans".into(), fields: vec![] });
+    vault.add_file(&id, &scan).unwrap();
+    vault.add_file(&id, &note).unwrap();
+    on_disk.remove(&note.id);
+
     let password: &[u8] = b"export-pass";
-    let exported = vault.export_kdbx(&Key { password: Some(password), key_file: None }).unwrap();
-    let imported = kdbx::read(&exported, &Key { password: Some(password), key_file: None }).unwrap();
-    assert_eq!(imported.files_skipped, vec!["big.iso".to_string()]);
+    let key = Key { password: Some(password), key_file: None };
+    let exported = vault
+        .export_kdbx(&key, &mut |file| {
+            let bytes = on_disk.get(&file.id).ok_or(VaultError::NotFound)?;
+            file.open(bytes)
+        })
+        .unwrap();
+    let imported = kdbx::read(&exported, &key).unwrap();
+    assert!(imported.files_skipped.is_empty());
     let scans = imported.entries.iter().find(|e| e.title == "Scans").unwrap();
-    let names: Vec<_> = scans
-        .fields
-        .iter()
-        .filter(|f| f.name == "attachment")
-        .map(|f| f.value.split(|&b| b == 0).next().unwrap().to_vec())
-        .collect();
-    assert_eq!(names, vec![b"edge.pdf".to_vec(), b"small.txt".to_vec()]);
+    let files: Vec<_> = scans.fields.iter().filter(|f| f.name == "attachment").collect();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].value.starts_with(b"big.iso\0"));
+    assert_eq!(&files[0].value[8..], &big[..]);
 }
 
 /// Writes an export to `$KDBX_OUT` for another implementation to open (`make.py` checks it):
@@ -233,7 +243,9 @@ fn writes_an_export_for_keepass() {
         ],
     });
     vault.passkey_register(None, "webauthn.io", b"user-handle-1", "pass_test", "Pass Test").unwrap();
-    let file = vault.export_kdbx(&Key { password: Some(PASSWORD), key_file: None }).unwrap();
+    let file = vault
+        .export_kdbx(&Key { password: Some(PASSWORD), key_file: None }, &mut |_| Err(VaultError::NotFound))
+        .unwrap();
     std::fs::write(path, file).unwrap();
 }
 
@@ -271,7 +283,7 @@ fn passkeys_go_out_and_come_back() {
     let (login, first) = vault.passkey_register(None, "github.com", b"h1", "alex", "Alex").unwrap();
     let (_, second) =
         vault.passkey_register(Some(&login), "github.com", b"h2", "deeplab", "DeepLab").unwrap();
-    let file = vault.export_kdbx(&key()).unwrap();
+    let file = vault.export_kdbx(&key(), &mut |_| Err(VaultError::NotFound)).unwrap();
     let imported = kdbx::read(&file, &key()).unwrap();
     assert_eq!(imported.entries.len(), 2);
     assert!(imported.entries.iter().any(|e| e.title == "github.com (deeplab)"));

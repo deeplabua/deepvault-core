@@ -5,7 +5,8 @@ use crate::aead::{self, NONCE_LEN};
 use crate::entropy::{Entropy, SystemEntropy};
 use crate::entry::{field, Entry, EntryKind, EntrySummary, Field, FieldSummary, NewEntry};
 use crate::error::{Result, VaultError};
-use crate::format::{self, Block, Header, KdfHeader, SlotHeader, ENTRY_ID_LEN};
+use crate::file::{FileRef, FileWriter, CHUNK_SIZE, FILE_ID_LEN};
+use crate::format::{self, Block, Header, KdfHeader, SlotHeader, ENTRY_ID_LEN, VERSION};
 use crate::kdf::{self, KdfParams, SALT_LEN};
 use crate::keys::{self, SlotKind, Subkeys, VAULT_ID_LEN, WRAPPED_VK_LEN};
 use crate::secret::{Key, SecretBytes};
@@ -30,6 +31,8 @@ const DEVICE_SLOT_VERSION: u8 = 1;
 const DEVICE_SLOT_LEN: usize = 1 + NONCE_LEN + WRAPPED_VK_LEN;
 
 pub struct Vault {
+    /// The file version: `VERSION` (2), or 1 for a file read that has not moved yet (`upgrade`).
+    version: u16,
     header: Header,
     vk: Key,
     keys: Subkeys,
@@ -67,17 +70,29 @@ pub struct AuditItem {
 impl Vault {
     /// A new vault with one password slot and no entries. Runs the KDF once.
     pub fn create(password: &[u8], params: KdfParams) -> Result<Self> {
-        Self::create_inner(Box::new(SystemEntropy), password, params)
+        Self::create_inner(VERSION, Box::new(SystemEntropy), password, params)
     }
 
     /// `create` with scripted randomness and time, for test vectors. Randomness is drawn in
     /// this order: vault id (16), salt (16), VK (32), slot nonce (24).
     #[cfg(feature = "testing")]
     pub fn create_with(entropy: Box<dyn Entropy>, password: &[u8], params: KdfParams) -> Result<Self> {
-        Self::create_inner(entropy, password, params)
+        Self::create_inner(VERSION, entropy, password, params)
     }
 
-    fn create_inner(mut entropy: Box<dyn Entropy>, password: &[u8], params: KdfParams) -> Result<Self> {
+    /// `create_with`, writing format v1: the v1 vector, and vaults as DeepVault made them before
+    /// v2, for the tests of `upgrade`.
+    #[cfg(feature = "testing")]
+    pub fn create_v1_with(entropy: Box<dyn Entropy>, password: &[u8], params: KdfParams) -> Result<Self> {
+        Self::create_inner(format::VERSION_1, entropy, password, params)
+    }
+
+    fn create_inner(
+        version: u16,
+        mut entropy: Box<dyn Entropy>,
+        password: &[u8],
+        params: KdfParams,
+    ) -> Result<Self> {
         params.check()?;
         let mut vault_id = [0; VAULT_ID_LEN];
         entropy.fill(&mut vault_id);
@@ -97,7 +112,16 @@ impl Vault {
             slots: vec![SlotHeader { kind: SlotKind::Password.label().into(), nonce, wrapped_vk }],
         };
         let keys = Subkeys::derive(&vk, &vault_id);
-        Ok(Self { header, vk, keys, blocks: Vec::new(), index: Vec::new(), trash: Vec::new(), entropy })
+        Ok(Self {
+            version,
+            header,
+            vk,
+            keys,
+            blocks: Vec::new(),
+            index: Vec::new(),
+            trash: Vec::new(),
+            entropy,
+        })
     }
 
     /// Opens a vault file with the master password: tries every password slot with the key
@@ -149,7 +173,7 @@ impl Vault {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&keys, &raw.header.vault_id, block)?;
+            let entry = decrypt(&keys, raw.version, &raw.header.vault_id, block)?;
             if entry.deleted {
                 continue;
             }
@@ -161,6 +185,7 @@ impl Vault {
             }
         }
         Ok(Self {
+            version: raw.version,
             header: raw.header,
             vk,
             keys,
@@ -174,7 +199,8 @@ impl Vault {
     /// Undo: the entries as they were in `file`, a copy of this same vault saved earlier
     /// (`to_bytes` before a merge). Its MACs must check with this vault's keys — another vault
     /// or a damaged copy is refused and nothing changes. The header (slots, KDF) stays as it is
-    /// now: only the entries go back.
+    /// now: only the entries go back — and the format version, so a move to v2 whose files could
+    /// not be written goes back to the v1 bytes saved before it.
     pub fn revert_to(&mut self, file: &[u8]) -> Result<()> {
         let raw = format::parse(file)?;
         if raw.header.vault_id != self.header.vault_id
@@ -189,7 +215,7 @@ impl Vault {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&self.keys, &self.header.vault_id, block)?;
+            let entry = decrypt(&self.keys, raw.version, &self.header.vault_id, block)?;
             if entry.deleted {
                 continue;
             }
@@ -200,6 +226,7 @@ impl Vault {
                 trash.push(summary)
             }
         }
+        self.version = raw.version;
         self.blocks = raw.blocks;
         self.index = index;
         self.trash = trash;
@@ -208,7 +235,7 @@ impl Vault {
 
     /// The whole file, ready to be written atomically by the caller.
     pub fn to_bytes(&self) -> Vec<u8> {
-        format::write(&self.header, &self.blocks, &self.keys)
+        format::write(self.version, &self.header, &self.blocks, &self.keys)
     }
 
     /// Replaces the master password (PRD 04: one slot rewritten, no entry). `current` must open
@@ -256,7 +283,7 @@ impl Vault {
     pub fn set_favorite(&mut self, id: &[u8; ENTRY_ID_LEN], favorite: bool) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let mut entry = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         entry.favorite = favorite;
         self.index[position] = EntrySummary::new(*id, &entry);
         self.blocks[block] = self.seal(*id, &entry);
@@ -557,7 +584,7 @@ impl Vault {
     pub fn trash_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let mut entry = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         let now = self.entropy.now();
         entry.trashed_at = now.max(1);
         entry.updated_at = now.max(entry.updated_at);
@@ -572,7 +599,7 @@ impl Vault {
     pub fn restore_entry(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.trash.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let mut entry = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         entry.trashed_at = 0;
         entry.updated_at = self.entropy.now().max(entry.updated_at);
         self.trash.remove(position);
@@ -612,7 +639,7 @@ impl Vault {
             return Err(VaultError::NotFound);
         }
         let block = self.block_index(id)?;
-        let old = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let old = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         let tombstone = Entry {
             kind: old.kind,
             title: String::new(),
@@ -853,7 +880,7 @@ impl Vault {
     pub fn update_entry(&mut self, id: &[u8; ENTRY_ID_LEN], new: NewEntry) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let old = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let old = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         let mut fields = new.fields;
         keep_history(&old.fields, &mut fields, self.entropy.now());
         let entry = Entry {
@@ -878,7 +905,7 @@ impl Vault {
     pub fn mark_used(&mut self, id: &[u8; ENTRY_ID_LEN]) -> Result<()> {
         let position = self.index.iter().position(|summary| &summary.id == id).ok_or(VaultError::NotFound)?;
         let block = self.block_index(id)?;
-        let mut entry = decrypt(&self.keys, &self.header.vault_id, &self.blocks[block])?;
+        let mut entry = decrypt(&self.keys, self.version, &self.header.vault_id, &self.blocks[block])?;
         entry.used_at = self.entropy.now().max(entry.used_at);
         self.index[position] = EntrySummary::new(*id, &entry);
         self.blocks[block] = self.seal(*id, &entry);
@@ -911,14 +938,36 @@ impl Vault {
     /// Every live entry as a KDBX 4.0 file opened by `key` (ADR-0008): logins as KeePass has
     /// them, other kinds with DeepVault's field names and kind, tags as KeePass tags, files as
     /// binaries. Argon2id and ChaCha20; the caller writes it where the user chose.
-    pub fn export_kdbx(&mut self, key: &crate::kdbx::Key) -> Result<Vec<u8>> {
+    ///
+    /// A v2 vault's files are read through `read` — the content of `files/<id>` for the ref —
+    /// one at a time; a file `read` cannot give (not synced yet) is left out.
+    pub fn export_kdbx(
+        &mut self,
+        key: &crate::kdbx::Key,
+        read: &mut dyn FnMut(&FileRef) -> Result<SecretBytes>,
+    ) -> Result<Vec<u8>> {
         let mut entries = Vec::with_capacity(self.index.len());
         for summary in &self.index {
             let entry = self.live(&summary.id)?;
+            let mut fields = Vec::with_capacity(entry.fields.len());
+            for f in &entry.fields {
+                if f.custom || f.name != field::FILE {
+                    fields.push(f.clone());
+                    continue;
+                }
+                let Some(file) = FileRef::from_bytes(&f.value) else { continue };
+                let Ok(content) = read(&file) else { continue };
+                fields.push(Field {
+                    name: field::ATTACHMENT.into(),
+                    value: attachment_value(&file.name, content.expose()),
+                    concealed: true,
+                    custom: false,
+                });
+            }
             entries.push(crate::kdbx::ExportEntry {
                 kind: entry.kind,
                 title: entry.title.clone(),
-                fields: entry.fields.clone(),
+                fields,
                 created: entry.created_at,
                 modified: entry.updated_at,
             });
@@ -1039,7 +1088,7 @@ impl Vault {
             return Err(VaultError::NotFound);
         }
         let block = &self.blocks[self.block_index(id)?];
-        decrypt(&self.keys, &self.header.vault_id, block)
+        decrypt(&self.keys, self.version, &self.header.vault_id, block)
     }
 
     /// An entry that is live or in Recently Deleted, decrypted; for reading only.
@@ -1048,7 +1097,7 @@ impl Vault {
             return self.live(id);
         }
         let block = &self.blocks[self.block_index(id)?];
-        decrypt(&self.keys, &self.header.vault_id, block)
+        decrypt(&self.keys, self.version, &self.header.vault_id, block)
     }
 
     /// Puts the live entries (or those in Recently Deleted) back in block order.
@@ -1064,11 +1113,7 @@ impl Vault {
     }
 
     fn seal(&mut self, id: [u8; ENTRY_ID_LEN], entry: &Entry) -> Block {
-        let mut nonce = [0; NONCE_LEN];
-        self.entropy.fill(&mut nonce);
-        let aad = keys::aad("entry", &self.header.vault_id, &id);
-        let ciphertext = aead::seal(&self.keys.entries, &nonce, &entry.to_cbor(), &aad);
-        Block { entry_id: id, nonce, ciphertext }
+        self.seal_as(self.version, id, entry)
     }
 }
 
@@ -1141,8 +1186,8 @@ impl Comparable {
 /// A block that does not authenticate is damaged; one that does but is no entry this core
 /// reads was written, with this vault's key, by a newer DeepVault (a field added since): only
 /// that writer could have made it, and an older one must not rewrite what it cannot read.
-fn decrypt(keys: &Subkeys, vault_id: &[u8; VAULT_ID_LEN], block: &Block) -> Result<Entry> {
-    let aad = keys::aad("entry", vault_id, &block.entry_id);
+fn decrypt(keys: &Subkeys, version: u16, vault_id: &[u8; VAULT_ID_LEN], block: &Block) -> Result<Entry> {
+    let aad = keys::aad_for(version, "entry", vault_id, &block.entry_id);
     let plaintext =
         aead::open(&keys.entries, &block.nonce, &block.ciphertext, &aad).ok_or(VaultError::Corrupted)?;
     Entry::from_cbor(plaintext.expose()).ok_or(VaultError::NewerEntries)
@@ -1198,6 +1243,202 @@ fn keep_history(old: &[Field], new: &mut Vec<Field>, now: u64) {
     }
 }
 
+/// Files outside the vault file (format v2, ADR-0014): what entries say about them. The core
+/// keeps no file system: `files/<id>` is read and written by the caller, through `FileWriter`,
+/// `FileReader` and the callbacks here.
+impl Vault {
+    /// `VERSION` (2), or 1 for a vault read from a v1 file that has not moved yet.
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+
+    /// A writer for a new file of this vault: seal its content into `files/<id>`, then put its
+    /// ref in an entry (`add_file`, or a `file` field in `update_entry`). Randomness: file id
+    /// (16), key (32), nonce prefix (19).
+    pub fn file_writer(&mut self, name: &str) -> FileWriter {
+        FileWriter::new(&mut *self.entropy, self.header.vault_id, name, CHUNK_SIZE)
+    }
+
+    /// `file_writer` with chunks of `chunk_size` bytes, for test vectors.
+    #[cfg(feature = "testing")]
+    pub fn file_writer_chunked(&mut self, name: &str, chunk_size: usize) -> FileWriter {
+        FileWriter::new(&mut *self.entropy, self.header.vault_id, name, chunk_size)
+    }
+
+    /// The `file` fields of an entry, live or in Recently Deleted: each one's position (as
+    /// `fields` lists them) and ref.
+    pub fn files(&self, id: &[u8; ENTRY_ID_LEN]) -> Result<Vec<(usize, FileRef)>> {
+        let entry = self.readable(id)?;
+        Ok(entry
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.custom && f.name == field::FILE)
+            .filter_map(|(index, f)| FileRef::from_bytes(&f.value).map(|file| (index, file)))
+            .collect())
+    }
+
+    /// The ref of the `file` field at `index`. `NotFound` when it is no such field.
+    pub fn file_at(&self, id: &[u8; ENTRY_ID_LEN], index: usize) -> Result<FileRef> {
+        let entry = self.readable(id)?;
+        let f = entry.fields.get(index).ok_or(VaultError::NotFound)?;
+        if f.custom || f.name != field::FILE {
+            return Err(VaultError::NotFound);
+        }
+        FileRef::from_bytes(&f.value).ok_or(VaultError::NotFound)
+    }
+
+    /// Adds a file written with `file_writer` to a live entry, after its other fields. Only a v2
+    /// vault keeps files outside: `UnsupportedVersion(1)` for a v1 one. Randomness: nonce (24).
+    pub fn add_file(&mut self, id: &[u8; ENTRY_ID_LEN], file: &FileRef) -> Result<()> {
+        if self.version != VERSION {
+            return Err(VaultError::UnsupportedVersion(self.version));
+        }
+        let old = self.live(id)?;
+        let mut fields = old.fields.clone();
+        fields.push(file_field(file));
+        self.update_entry(id, NewEntry { kind: old.kind, title: old.title.clone(), fields })
+    }
+
+    /// Takes the file `file_id` out of a live entry. Its `files/<id>` stays until nothing refers
+    /// to it for a week (`referenced_files`): a sync may bring the entry back. Randomness: nonce (24).
+    pub fn remove_file(&mut self, id: &[u8; ENTRY_ID_LEN], file_id: &[u8; FILE_ID_LEN]) -> Result<()> {
+        let old = self.live(id)?;
+        let mut fields = old.fields.clone();
+        let before = fields.len();
+        fields.retain(|f| {
+            f.custom
+                || f.name != field::FILE
+                || FileRef::from_bytes(&f.value).is_none_or(|r| &r.id != file_id)
+        });
+        if fields.len() == before {
+            return Err(VaultError::NotFound);
+        }
+        self.update_entry(id, NewEntry { kind: old.kind, title: old.title.clone(), fields })
+    }
+
+    /// Every file an entry refers to — live, in Recently Deleted, or a copy of changes not
+    /// confirmed (Unsaved) — once each: what `files/` must keep. Any other file there is left
+    /// over, and goes when it is a week old.
+    pub fn referenced_files(&self) -> Result<Vec<[u8; FILE_ID_LEN]>> {
+        let mut ids = Vec::new();
+        for block in &self.blocks {
+            let entry = decrypt(&self.keys, self.version, &self.header.vault_id, block)?;
+            for f in entry.fields.iter().filter(|f| !f.custom && f.name == field::FILE) {
+                if let Some(file) = FileRef::from_bytes(&f.value) {
+                    if !ids.contains(&file.id) {
+                        ids.push(file.id);
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Moves a v1 vault to v2 (ADR-0014): every `attachment` field, live or in Recently Deleted,
+    /// becomes a `file` field, its content sealed into a file handed to `write` (`files/<id>`,
+    /// whole: a v1 file is at most 10 MiB); every entry is sealed again with v2's AAD. Kinds,
+    /// titles, dates and the order of fields stay. All or nothing: when `write` fails, the vault
+    /// stays v1 as it was (files written before stay over, for the clean-up). Returns how many
+    /// files moved; 0 and nothing done for a v2 vault. Randomness: per file id (16), key (32),
+    /// nonce prefix (19); per entry nonce (24).
+    pub fn upgrade(&mut self, write: &mut WriteFile<'_>) -> Result<usize> {
+        if self.version == VERSION {
+            return Ok(0);
+        }
+        let mut moved = 0;
+        let mut blocks = Vec::with_capacity(self.blocks.len());
+        for block in self.blocks.clone() {
+            let mut entry = decrypt(&self.keys, self.version, &self.header.vault_id, &block)?;
+            moved += self.move_attachments(&mut entry.fields, write)?;
+            blocks.push(self.seal_as(VERSION, block.entry_id, &entry));
+        }
+        self.blocks = blocks;
+        self.version = VERSION;
+        Ok(moved)
+    }
+
+    /// An import's `attachment` fields (KeePass, a v1 backup) as files of this v2 vault, each
+    /// sealed into a file handed to `write`, before `import`. A v1 vault leaves them as they are.
+    pub fn externalize(&mut self, entries: &mut [NewEntry], write: &mut WriteFile<'_>) -> Result<usize> {
+        if self.version != VERSION {
+            return Ok(0);
+        }
+        let mut moved = 0;
+        for entry in entries.iter_mut() {
+            moved += self.move_attachments(&mut entry.fields, write)?;
+        }
+        Ok(moved)
+    }
+
+    fn move_attachments(&mut self, fields: &mut [Field], write: &mut WriteFile<'_>) -> Result<usize> {
+        let mut moved = 0;
+        for f in fields.iter_mut().filter(|f| !f.custom && f.name == field::ATTACHMENT) {
+            let (name, content) = attachment_parts(&f.value);
+            let mut writer = self.file_writer(&name);
+            let mut sealed = writer.header();
+            sealed.extend(writer.update(content)?);
+            let (last, file) = writer.finish()?;
+            sealed.extend(last);
+            write(&file.id, &sealed)?;
+            *f = file_field(&file);
+            moved += 1;
+        }
+        Ok(moved)
+    }
+
+    fn seal_as(&mut self, version: u16, id: [u8; ENTRY_ID_LEN], entry: &Entry) -> Block {
+        let mut nonce = [0; NONCE_LEN];
+        self.entropy.fill(&mut nonce);
+        let aad = keys::aad_for(version, "entry", &self.header.vault_id, &id);
+        let ciphertext = aead::seal(&self.keys.entries, &nonce, &entry.to_cbor(), &aad);
+        Block { entry_id: id, nonce, ciphertext }
+    }
+
+    /// `Corrupted` unless `file` is a file of this vault: its id, and MACs under its keys.
+    pub(crate) fn verify_file(&self, file: &[u8]) -> Result<()> {
+        let raw = format::parse(file)?;
+        if raw.header.vault_id != self.header.vault_id
+            || !keys::verify_mac(&self.keys.header_mac, raw.header_region, raw.header_mac)
+            || !keys::verify_mac(&self.keys.file_mac, raw.file_region, raw.file_mac)
+        {
+            return Err(VaultError::Corrupted);
+        }
+        Ok(())
+    }
+
+    /// For `pack`: the vault file's keys.
+    pub(crate) fn subkeys(&self) -> &Subkeys {
+        &self.keys
+    }
+}
+
+/// Where a new file's bytes go: `files/<id>`, written whole by the caller.
+pub type WriteFile<'a> = dyn FnMut(&[u8; FILE_ID_LEN], &[u8]) -> Result<()> + 'a;
+
+/// A `file` field for a ref.
+fn file_field(file: &FileRef) -> Field {
+    Field { name: field::FILE.into(), value: file.to_bytes().to_vec(), concealed: true, custom: false }
+}
+
+/// A v1 `attachment` value's name and content; a value without a zero byte is all content.
+fn attachment_parts(value: &[u8]) -> (String, &[u8]) {
+    match value.iter().position(|&b| b == 0) {
+        Some(at) => (String::from_utf8_lossy(&value[..at]).into_owned(), &value[at + 1..]),
+        None => (String::new(), value),
+    }
+}
+
+/// `name ‖ 0x00 ‖ content`, in a buffer of its exact size.
+fn attachment_value(name: &str, content: &[u8]) -> Vec<u8> {
+    let name = name.replace('\0', "");
+    let mut value = Vec::with_capacity(name.len() + 1 + content.len());
+    value.extend_from_slice(name.as_bytes());
+    value.push(0);
+    value.extend_from_slice(content);
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1215,7 +1456,7 @@ mod tests {
     fn an_entry_with_a_field_added_later_is_newer_not_damaged() {
         let mut vault = vault_with_one_entry();
         let block = &vault.blocks[0];
-        let aad = keys::aad("entry", &vault.header.vault_id, &block.entry_id);
+        let aad = keys::aad_for(vault.version, "entry", &vault.header.vault_id, &block.entry_id);
         let plain = aead::open(&vault.keys.entries, &block.nonce, &block.ciphertext, &aad).expect("opens");
         let mut value: ciborium::Value = ciborium::from_reader(plain.expose()).expect("cbor");
         if let ciborium::Value::Map(fields) = &mut value {

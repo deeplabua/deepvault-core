@@ -81,7 +81,7 @@ impl Inputs {
 
     /// The sample vault, built from the inputs.
     fn build(&self) -> Vec<u8> {
-        let mut vault = Vault::create_with(Box::new(self.entropy()), &self.password, self.params).unwrap();
+        let mut vault = Vault::create_v1_with(Box::new(self.entropy()), &self.password, self.params).unwrap();
         vault.add_entry(self.new_entry());
         vault.to_bytes()
     }
@@ -103,7 +103,7 @@ fn compute(inputs: &Inputs) -> Outputs {
     let wrapped_vk = keys::wrap_vk(&kek, &vk, &inputs.slot_nonce, SlotKind::Password, &inputs.vault_id);
     let subkeys = Subkeys::derive(&vk, &inputs.vault_id);
     let plaintext = entry_plaintext(inputs.new_entry(), inputs.now, inputs.now);
-    let aad = keys::aad("entry", &inputs.vault_id, &inputs.entry_id);
+    let aad = keys::aad_for(1, "entry", &inputs.vault_id, &inputs.entry_id);
     let ciphertext = aead::seal(&subkeys.entries, &inputs.entry_nonce, &plaintext, &aad);
     Outputs {
         kek: kek.expose().to_vec(),

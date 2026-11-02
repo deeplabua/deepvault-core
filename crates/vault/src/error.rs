@@ -33,6 +33,8 @@ pub enum VaultError {
     EncryptedSshKey,
     /// An SSH key of a type the agent does not take (RSA, ECDSA from a file).
     UnsupportedSshKey,
+    /// A file over `file::FILE_MAX_BYTES` (2 GB), or one a v1 vault has no room for.
+    FileTooLarge,
 }
 
 impl fmt::Display for VaultError {
@@ -51,6 +53,7 @@ impl fmt::Display for VaultError {
             Self::InvalidSshKey => f.write_str("not an OpenSSH private key"),
             Self::EncryptedSshKey => f.write_str("the SSH key has a passphrase"),
             Self::UnsupportedSshKey => f.write_str("only ed25519 SSH keys are taken"),
+            Self::FileTooLarge => f.write_str("the file is too large"),
         }
     }
 }

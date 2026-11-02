@@ -1,0 +1,89 @@
+{
+  "description": "DeepVault vault package, format v2 (ADR-0014): <name>.dvault/vault (as v1, version 2) and files/<file_id hex>. Randomness is drawn in this order: vault_id, kdf.salt, vault_key, slot_nonce, then per file file_id, key, nonce_prefix, then entry_id, entry_nonce. AAD = \"DVLT\" || u16le(version) || purpose || 0x00 || vault_id || extra: a slot says version 1 (so a v1 vault moves without its password), an entry 2, a file's chunks 2. Subkeys as v1 (\"deepvault/v1/<purpose>\"), plus pack_mac = HKDF(info = \"deepvault/v2/pack-mac\") for a vault in one file. The entry has the given fields, then one `file` field per file (concealed). Files are sealed as in file_v1.json, chunks of 64 bytes; the second ends on a chunk boundary.",
+  "expected": {
+    "entries_key": "0803683aaf2a7c3200e520c7732075bebc628706f020a60deb220033b8688fcf",
+    "entry_ciphertext": "1d79d78918d9cd946706a8d01bb5cfc789f1e55fd2844ee55bbcc41d0b905e8ee5560b2406441841da63d0292a87d9df862c373ea32a30697be3a8ab072172452412d4bdd9f0ac0602423bb6bda58214b399b33a6b74b6251fc699a7cf82825d3c7836d8a5f1cbfa77b9b712c85043d0f500c6ccf3ae514f9365e09c710f1395e320845e5025a4f8ca5ad054d2edfb9e5714b70b3c46a666b956a714c6a05b999ff468fecf755d0f71442f23c6905c41ee9630f989f32930a7e2465b6c08b6536494ecd2ed57cd25d8ecf51a9f9682ca393eebfaafdb9053993af048f8b75b3a56abb4ceba9e97bae1aabff423b7476d850411fc50ed19c72281e90740f6c53922fdb7f65fa578b3d9f05dcb21a35a364a2c054a69a917684f8a02042bd013f76be1370fdfa3a78c2d0db75b2871f830665c4b3579e00860c46917b66c6b24d4af3b0ad4900f7e47f5c13a1610c404bd0c29cf417ccac0a91ea0d60c0530df4b54819f32413488b41ac1a30c9d8c2b036b8773e5c9668d346c2ecaca95c668793c780186096806957e36ca9766d4cd5c4caf1abfa9a6a372eeba3df65a5b754f90babecd552725b5e86dca2745fe43ca21d972900bbea5aaaa0659f76c939705e629290b0c0c63266929dfcd7c647c5cd24b23edf9954b731bffb941704707163f7f1c1738efd08d87799c5721390977ac726052d6546a3098cb6bfb5bb5d32871c36902fa6a92e17cac56754b21144125af5283f2cdbf390d231174ecd68500bac49d113e465663a3cd88d0ce53e38d54ca5ce9fbb368a0b6453d71df974876f3987f81b294f316fb47312f957cd7f3e338247b049ce119b2356d679f151a101aea0495ee4c9dc4e43b07b87d336fdcfc290671",
+    "entry_plaintext": "a6646b696e64656c6f67696e657469746c65674578616d706c65666669656c647385a3646e616d656375726c6576616c7565581968747470733a2f2f6578616d706c652e636f6d2f6c6f67696e69636f6e6365616c6564f4a3646e616d6568757365726e616d656576616c756551616c696365406578616d706c652e636f6d69636f6e6365616c6564f4a3646e616d656870617373776f72646576616c75655268756e746572322d6275742d6c6f6e67657269636f6e6365616c6564f5a3646e616d656466696c656576616c756558a1a762696450101112131415161718191a1b1c1d1e1f657661756c7450d0d1d2d3d4d5d6d7d8d9dadbdcdddedf646e616d656c70617373706f72742e6a70676473697a651864636b65795820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f667368613235365820522d4aabd32ea2116843c1dbdef178195b0fe481c6cff5d6f11c87f2feeb44ee67637265617465641a6ae7d28069636f6e6365616c6564f5a3646e616d656466696c656576616c756558a1a7626964508081828384858687888980aa8b8c8d8e657661756c7450d0d1d2d3d4d5d6d7d8d9dadbdcdddedf646e616d656c626f756e646172792e62696e6473697a651880636b65795820b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf667368613235365820d2742f1f4ac6bb7ca2b239ee18402ba8b3f9f8e652d2a72973c2b9ba11c08cf667637265617465641a6ae7d28069636f6e6365616c6564f56a637265617465645f61741a6ae7d2806a757064617465645f61741a6ae7d2806764656c65746564f4",
+    "file_mac_key": "68cdddf1282a7f36be47df2e7507b32699df3101e379c23edeac298e96d6748d",
+    "files": [
+      {
+        "field_value": "a762696450101112131415161718191a1b1c1d1e1f657661756c7450d0d1d2d3d4d5d6d7d8d9dadbdcdddedf646e616d656c70617373706f72742e6a70676473697a651864636b65795820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f667368613235365820522d4aabd32ea2116843c1dbdef178195b0fe481c6cff5d6f11c87f2feeb44ee67637265617465641a6ae7d280",
+        "len": 177,
+        "name": "101112131415161718191a1b1c1d1e1f",
+        "sha256": "522d4aabd32ea2116843c1dbdef178195b0fe481c6cff5d6f11c87f2feeb44ee"
+      },
+      {
+        "field_value": "a7626964508081828384858687888980aa8b8c8d8e657661756c7450d0d1d2d3d4d5d6d7d8d9dadbdcdddedf646e616d656c626f756e646172792e62696e6473697a651880636b65795820b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf667368613235365820d2742f1f4ac6bb7ca2b239ee18402ba8b3f9f8e652d2a72973c2b9ba11c08cf667637265617465641a6ae7d280",
+        "len": 205,
+        "name": "8081828384858687888980aa8b8c8d8e",
+        "sha256": "d2742f1f4ac6bb7ca2b239ee18402ba8b3f9f8e652d2a72973c2b9ba11c08cf6"
+      }
+    ],
+    "header_mac_key": "a925aa60d6de3b664bf517700c1f008f7d2b7cac9007827371e59e1037475661",
+    "kek": "9aeef75313e585f492c33c5e12d82e9ad253b7dd78632d537e899cd4eddd789c",
+    "pack_mac_key": "939417186b189605e9434fb1610b687b165527e0ed9d1fa6013e517b988c1d35",
+    "vault_len": 963,
+    "wrapped_vault_key": "734fcf5ed1877e351ae238061dbbf4c23d9e625e932763fdb55412cb1732b07df5cc336570abc26e5c5b969c70ddecaa"
+  },
+  "format_version": 2,
+  "input": {
+    "entry": {
+      "fields": [
+        {
+          "concealed": false,
+          "name": "url",
+          "value": "https://example.com/login"
+        },
+        {
+          "concealed": false,
+          "name": "username",
+          "value": "alice@example.com"
+        },
+        {
+          "concealed": true,
+          "name": "password",
+          "value": "hunter2-but-longer"
+        }
+      ],
+      "kind": "login",
+      "title": "Example"
+    },
+    "entry_id": "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "entry_nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+    "files": [
+      {
+        "chunk_size": 64,
+        "content": "020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7",
+        "file_id": "101112131415161718191a1b1c1d1e1f",
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "name": "passport.jpg",
+        "nonce_prefix": "505152535455565758595a5b5c5d5e5f606162",
+        "now": 1793577600,
+        "vault_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+      },
+      {
+        "chunk_size": 64,
+        "content": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c",
+        "file_id": "8081828384858687888980aa8b8c8d8e",
+        "key": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+        "name": "boundary.bin",
+        "nonce_prefix": "707172737475767778797a7b7c7d7e7f808182",
+        "now": 1793577600,
+        "vault_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+      }
+    ],
+    "kdf": {
+      "alg": "argon2id",
+      "m_kib": 8192,
+      "p": 1,
+      "salt": "000102030405060708090a0b0c0d0e0f",
+      "t": 1
+    },
+    "now": 1793577600,
+    "password": "correct horse battery staple",
+    "slot_nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+    "vault_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "vault_key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+  },
+  "test_only": true
+}

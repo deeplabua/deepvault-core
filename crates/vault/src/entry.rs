@@ -59,6 +59,12 @@ pub mod field {
     /// one-time code changes): `<field name>\n<seconds since the Unix epoch>\n<value>`,
     /// concealed; the last `HISTORY_LEN` of each field, oldest first.
     pub const PREVIOUS: &str = "previous";
+    /// A file in a v1 vault: its name (UTF-8), a zero byte, its content — all in the entry
+    /// (concealed). A v2 vault has none: `upgrade` turns them into `FILE` fields.
+    pub const ATTACHMENT: &str = "attachment";
+    /// A file in a v2 vault (ADR-0014): `file::FileRef` as CBOR — id, vault, name, size, key,
+    /// SHA-256, date (concealed); the content is in `files/<id>` beside the vault file.
+    pub const FILE: &str = "file";
     /// How many earlier values of a field an entry keeps.
     pub const HISTORY_LEN: usize = 10;
     /// The fields whose earlier values are kept.

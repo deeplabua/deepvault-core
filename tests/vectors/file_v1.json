@@ -1,0 +1,25 @@
+{
+  "description": "DeepVault file of an entry, DVLF v1 (ADR-0014): header = \"DVLF\" || u16le(1) || file_id (16) || u32le(chunk_size) || nonce_prefix (19). Chunk i = XChaCha20-Poly1305(key, nonce = nonce_prefix || u32be(i) || last (1 byte), content[i*chunk_size..], AAD = \"DVLT\" || u16le(2) || \"file\" || 0x00 || vault_id || file_id). Every chunk but the last is full; the last has 1..chunk_size bytes (0 only for an empty file). field_value = the entry's `file` field: CBOR map {id, vault, name, size, key, sha256, created}. Randomness: file_id, key, nonce_prefix.",
+  "expected": {
+    "chunks": [
+      "cd067d56841fd1df0232c3b7e25cb788fbcfabde6497d1d1712e04ef1e6c527818c8da4f05b5ea9768d3369e03a8bf7e4444cb5d2e65936646050f9b23c0ac1e7fde8218be2f6d6b9eb817cc4db463e8",
+      "5469697cca3d9941c4487fa95fa25aac800e797532e21fcd44fe9ee20b86419d63c0d396972e81d6468bae47074438c3131d04927f7897109284be0774ab517f8a59aedb25e76dbc9e400aa6bb6f9712",
+      "37f723ba26efb1a0c76f68f04c0d3066e8e41d2e2e3b1e9db178465699fb075dc108c3d961f6"
+    ],
+    "field_value": "a762696450f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff657661756c7450d0d1d2d3d4d5d6d7d8d9dadbdcdddedf646e616d65687363616e2e7064666473697a651896636b65795820606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f667368613235365820004e8c0911d7acbb7cb2bf782603100f6d5e302093ba905ec7c578e49fdde4c267637265617465641a6ae7d280",
+    "file": "44564c460100f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff40000000909192939495969798999a9b9c9d9e9fa0a1a2cd067d56841fd1df0232c3b7e25cb788fbcfabde6497d1d1712e04ef1e6c527818c8da4f05b5ea9768d3369e03a8bf7e4444cb5d2e65936646050f9b23c0ac1e7fde8218be2f6d6b9eb817cc4db463e85469697cca3d9941c4487fa95fa25aac800e797532e21fcd44fe9ee20b86419d63c0d396972e81d6468bae47074438c3131d04927f7897109284be0774ab517f8a59aedb25e76dbc9e400aa6bb6f971237f723ba26efb1a0c76f68f04c0d3066e8e41d2e2e3b1e9db178465699fb075dc108c3d961f6",
+    "header": "44564c460100f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff40000000909192939495969798999a9b9c9d9e9fa0a1a2",
+    "sha256": "004e8c0911d7acbb7cb2bf782603100f6d5e302093ba905ec7c578e49fdde4c2"
+  },
+  "file_version": 1,
+  "input": {
+    "chunk_size": 64,
+    "content": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d14",
+    "file_id": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+    "key": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+    "name": "scan.pdf",
+    "nonce_prefix": "909192939495969798999a9b9c9d9e9fa0a1a2",
+    "now": 1793577600,
+    "vault_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+  }
+}

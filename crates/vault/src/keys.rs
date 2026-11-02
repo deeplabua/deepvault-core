@@ -6,7 +6,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::aead::{self, NONCE_LEN, TAG_LEN};
-use crate::format::{MAGIC, VERSION};
+use crate::format::MAGIC;
 use crate::secret::{Key, KEY_LEN};
 
 pub const VAULT_ID_LEN: usize = 16;
@@ -36,12 +36,13 @@ impl SlotKind {
     }
 }
 
-/// Associated data that binds a ciphertext to its purpose, this format version and this vault:
-/// `"DVLT" ‖ version (u16 LE) ‖ purpose ‖ 0x00 ‖ vault_id ‖ extra`.
-pub fn aad(purpose: &str, vault_id: &[u8; VAULT_ID_LEN], extra: &[u8]) -> Vec<u8> {
+/// Associated data that binds a ciphertext to its purpose, a format version and this vault:
+/// `"DVLT" ‖ version (u16 LE) ‖ purpose ‖ 0x00 ‖ vault_id ‖ extra`. Entries say the version of
+/// the file they are in; slots always say 1 (`SLOT_AAD_VERSION`), files always 2.
+pub fn aad_for(version: u16, purpose: &str, vault_id: &[u8; VAULT_ID_LEN], extra: &[u8]) -> Vec<u8> {
     let mut aad = Vec::with_capacity(4 + 2 + purpose.len() + 1 + VAULT_ID_LEN + extra.len());
     aad.extend_from_slice(MAGIC);
-    aad.extend_from_slice(&VERSION.to_le_bytes());
+    aad.extend_from_slice(&version.to_le_bytes());
     aad.extend_from_slice(purpose.as_bytes());
     aad.push(0);
     aad.extend_from_slice(vault_id);
@@ -49,8 +50,12 @@ pub fn aad(purpose: &str, vault_id: &[u8; VAULT_ID_LEN], extra: &[u8]) -> Vec<u8
     aad
 }
 
+/// A key slot's AAD says version 1 in every format version (ADR-0014): a vault moves from v1
+/// to v2 without its master password, and Touch ID's device slot in the Keychain keeps opening.
+pub const SLOT_AAD_VERSION: u16 = 1;
+
 fn slot_aad(kind: SlotKind, vault_id: &[u8; VAULT_ID_LEN]) -> Vec<u8> {
-    aad("slot", vault_id, kind.label().as_bytes())
+    aad_for(SLOT_AAD_VERSION, "slot", vault_id, kind.label().as_bytes())
 }
 
 /// VK sealed under a KEK: 48 bytes.
@@ -81,6 +86,8 @@ pub struct Subkeys {
     pub header_mac: Key,
     pub file_mac: Key,
     pub entries: Key,
+    /// The MAC of a vault in one file with its files (`pack`, format v2).
+    pub pack_mac: Key,
 }
 
 impl Subkeys {
@@ -97,6 +104,7 @@ impl Subkeys {
             header_mac: expand("deepvault/v1/header-mac"),
             file_mac: expand("deepvault/v1/file-mac"),
             entries: expand("deepvault/v1/entries"),
+            pack_mac: expand("deepvault/v2/pack-mac"),
         }
     }
 }
@@ -139,7 +147,13 @@ mod tests {
     fn subkeys_differ_from_each_other_and_from_the_vault_key() {
         let vk = Key::from_slice(&[2; 32]).unwrap();
         let keys = Subkeys::derive(&vk, &[4; VAULT_ID_LEN]);
-        let all = [vk.expose(), keys.header_mac.expose(), keys.file_mac.expose(), keys.entries.expose()];
+        let all = [
+            vk.expose(),
+            keys.header_mac.expose(),
+            keys.file_mac.expose(),
+            keys.entries.expose(),
+            keys.pack_mac.expose(),
+        ];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
                 assert_ne!(a, b);

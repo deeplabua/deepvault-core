@@ -1,4 +1,5 @@
-//! The DeepVault vault: the `.dvault` v1 file format and its key hierarchy (PRD 04).
+//! The DeepVault vault: the `.dvault` file format (v1, and v2 with files outside the vault
+//! file: `file`, `pack`; ADR-0014) and its key hierarchy (PRD 04).
 //!
 //! ```text
 //! master password ─Argon2id(salt, params)─► KEK_pw ─┐
@@ -14,12 +15,14 @@ pub mod aead;
 mod entropy;
 mod entry;
 mod error;
+pub mod file;
 mod format;
 pub mod generator;
 pub mod import;
 pub mod kdbx;
 pub mod kdf;
 pub mod keys;
+pub mod pack;
 pub mod passkey;
 mod secret;
 pub mod ssh;
@@ -30,11 +33,12 @@ mod vault;
 pub use entropy::{Entropy, SystemEntropy};
 pub use entry::{field, EntryKind, EntrySummary, Field, FieldSummary, NewEntry};
 pub use error::{Result, VaultError};
-pub use format::{MAGIC, VERSION};
+pub use file::{FileReader, FileRef, FileWriter};
+pub use format::{MAGIC, VERSION, VERSION_1};
 pub use kdf::KdfParams;
 pub use secret::{Key, SecretBytes};
 pub use totp::TotpCode;
-pub use vault::{AuditItem, MergeChoice, Merged, PasskeyInfo, Vault};
+pub use vault::{AuditItem, MergeChoice, Merged, PasskeyInfo, Vault, WriteFile};
 
 /// Deterministic pieces for test vectors. Behind the `testing` feature: never in the app.
 #[cfg(feature = "testing")]

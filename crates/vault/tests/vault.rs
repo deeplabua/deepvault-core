@@ -816,8 +816,8 @@ fn a_truncated_or_extended_file_is_corrupted() {
 fn an_unknown_version_or_magic_is_named() {
     let file = sample();
     let mut newer = file.clone();
-    newer[4..6].copy_from_slice(&2u16.to_le_bytes());
-    assert_eq!(open(&newer).err(), Some(VaultError::UnsupportedVersion(2)));
+    newer[4..6].copy_from_slice(&3u16.to_le_bytes());
+    assert_eq!(open(&newer).err(), Some(VaultError::UnsupportedVersion(3)));
 
     let mut not_a_vault = file.clone();
     not_a_vault[..4].copy_from_slice(b"PK\x03\x04");

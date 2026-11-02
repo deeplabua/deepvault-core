@@ -19,8 +19,10 @@ use crate::passkey::{base64url_decode, base64url_encode, pem_to_der, Passkey};
 
 pub use crypto::Key;
 
-/// A field of an attachment (as the app stores one): the file's name, a zero byte, its content.
-pub(crate) const ATTACHMENT: &str = "attachment";
+/// A field of an attachment in a v1 vault: the file's name, a zero byte, its content. What an
+/// import gives (a v2 vault turns it into a file, `Vault::externalize`) and what an export takes
+/// (`Vault::export_kdbx` reads a v2 vault's files into it).
+pub(crate) const ATTACHMENT: &str = field::ATTACHMENT;
 
 /// The string that says which DeepVault kind an exported entry was, so a KDBX made by
 /// DeepVault comes back as cards, bank accounts, keys… rather than logins.
@@ -76,7 +78,7 @@ pub struct ExportEntry {
 
 /// One KeePass entry as a new entry: a login (or a note when it has nothing but notes), its
 /// group path and tags as tags, its strings and files as fields. `None`: nothing in it.
-/// A file over `ATTACHMENT_MAX_BYTES` is left out, its name added to `files_skipped`.
+/// A file over `file::FILE_MAX_BYTES` (2 GB) is left out, its name added to `files_skipped`.
 fn new_entry(entry: xml::Entry, files_skipped: &mut Vec<String>) -> Option<NewEntry> {
     let kind = entry
         .strings
@@ -123,7 +125,7 @@ fn new_entry(entry: xml::Entry, files_skipped: &mut Vec<String>) -> Option<NewEn
         fields.push(passkey);
     }
     for (name, content) in &entry.files {
-        if content.len() > crate::import::ATTACHMENT_MAX_BYTES {
+        if content.len() as u64 > crate::file::FILE_MAX_BYTES {
             files_skipped.push(name.replace('\0', ""));
             continue;
         }

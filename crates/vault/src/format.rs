@@ -1,8 +1,11 @@
-//! The `.dvault` file, version 1 (PRD 04, «Формат файла»). All integers little-endian.
+//! The `.dvault` file, versions 1 and 2 (PRD 04, «Формат файла»; ADR-0014). All integers
+//! little-endian. Version 2 is laid out as version 1; its entries keep files as `file` fields
+//! (`file::FileRef`, the content in `files/<id>` beside this file) instead of `attachment`
+//! fields with the content in the entry, and their AAD says version 2.
 //!
 //! ```text
 //! magic        "DVLT"                                   4 B
-//! version      u16 = 1                                  2 B
+//! version      u16 = 1 or 2                             2 B
 //! header_len   u32 (≤ 64 KiB)                           4 B
 //! header       CBOR Header                              header_len B
 //! header_mac   HMAC-SHA256(K_header_mac, magic … header)    32 B
@@ -28,7 +31,11 @@ use crate::kdf::SALT_LEN;
 use crate::keys::{self, Subkeys, MAC_LEN, VAULT_ID_LEN};
 
 pub const MAGIC: &[u8; 4] = b"DVLT";
-pub const VERSION: u16 = 1;
+/// The version DeepVault writes: a new vault, and a v1 vault once it moved (`Vault::upgrade`).
+pub const VERSION: u16 = 2;
+/// Read as before; written only while a vault has not moved to v2 (a file in a folder the
+/// sandbox does not let the app write beside).
+pub const VERSION_1: u16 = 1;
 pub const MAX_HEADER_LEN: usize = 64 * 1024;
 const PREFIX_LEN: usize = 4 + 2 + 4;
 pub(crate) const ENTRY_ID_LEN: usize = 16;
@@ -64,6 +71,7 @@ pub(crate) struct SlotHeader {
     pub wrapped_vk: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Block {
     pub entry_id: [u8; ENTRY_ID_LEN],
     pub nonce: [u8; NONCE_LEN],
@@ -72,6 +80,7 @@ pub(crate) struct Block {
 
 /// A file cut into its parts, before any key is known. Nothing in it is trusted yet.
 pub(crate) struct RawFile<'a> {
+    pub version: u16,
     pub header: Header,
     /// What `header_mac` covers.
     pub header_region: &'a [u8],
@@ -90,7 +99,7 @@ pub(crate) fn parse(file: &[u8]) -> Result<RawFile<'_>> {
         return Err(VaultError::Corrupted);
     }
     let version = reader.u16()?;
-    if version != VERSION {
+    if version != VERSION && version != VERSION_1 {
         return Err(VaultError::UnsupportedVersion(version));
     }
     let header_len = reader.u32()? as usize;
@@ -119,17 +128,17 @@ pub(crate) fn parse(file: &[u8]) -> Result<RawFile<'_>> {
     if reader.remaining() != 0 {
         return Err(VaultError::Corrupted);
     }
-    Ok(RawFile { header, header_region, header_mac, file_region, file_mac, blocks })
+    Ok(RawFile { version, header, header_region, header_mac, file_region, file_mac, blocks })
 }
 
-pub(crate) fn write(header: &Header, blocks: &[Block], keys: &Subkeys) -> Vec<u8> {
+pub(crate) fn write(version: u16, header: &Header, blocks: &[Block], keys: &Subkeys) -> Vec<u8> {
     let header_bytes = to_cbor(header);
     assert!(header_bytes.len() <= MAX_HEADER_LEN, "header over 64 KiB");
     let body: usize = blocks.iter().map(|b| ENTRY_ID_LEN + NONCE_LEN + 4 + b.ciphertext.len()).sum();
     let mut out = Vec::with_capacity(PREFIX_LEN + header_bytes.len() + MAC_LEN + 4 + body + MAC_LEN);
 
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&header_bytes);
     let header_mac = keys::mac(&keys.header_mac, &out);
