@@ -42,13 +42,14 @@ pub fn read(file: &[u8], key: &Key) -> Result<Imported> {
     let parsed = xml::read(&xml, crypto::InnerStream::new(&stream)?, binaries)?;
     let mut entries = Vec::with_capacity(parsed.entries.len());
     let mut skipped = parsed.skipped;
+    let mut files_skipped = Vec::new();
     for entry in parsed.entries {
-        match new_entry(entry) {
+        match new_entry(entry, &mut files_skipped) {
             Some(new) => entries.push(new),
             None => skipped += 1,
         }
     }
-    Ok(Imported { format: Format::KeePass, entries, skipped })
+    Ok(Imported { format: Format::KeePass, entries, skipped, files_skipped })
 }
 
 /// `entries` as a KDBX 4.0 file for `key`, all in one group, tags as KeePass tags.
@@ -75,7 +76,8 @@ pub struct ExportEntry {
 
 /// One KeePass entry as a new entry: a login (or a note when it has nothing but notes), its
 /// group path and tags as tags, its strings and files as fields. `None`: nothing in it.
-fn new_entry(entry: xml::Entry) -> Option<NewEntry> {
+/// A file over `ATTACHMENT_MAX_BYTES` is left out, its name added to `files_skipped`.
+fn new_entry(entry: xml::Entry, files_skipped: &mut Vec<String>) -> Option<NewEntry> {
     let kind = entry
         .strings
         .iter()
@@ -121,6 +123,10 @@ fn new_entry(entry: xml::Entry) -> Option<NewEntry> {
         fields.push(passkey);
     }
     for (name, content) in &entry.files {
+        if content.len() > crate::import::ATTACHMENT_MAX_BYTES {
+            files_skipped.push(name.replace('\0', ""));
+            continue;
+        }
         let mut value = Vec::with_capacity(name.len() + 1 + content.len());
         value.extend_from_slice(name.replace('\0', "").as_bytes());
         value.push(0);

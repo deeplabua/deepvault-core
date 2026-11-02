@@ -60,7 +60,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Imported> {
     if !found {
         return Err(VaultError::InvalidImport);
     }
-    Ok(Imported { format: Format::Secrets, entries, skipped })
+    Ok(Imported { format: Format::Secrets, entries, skipped, files_skipped: Vec::new() })
 }
 
 /// Fields as they are collected: a value is moved in, not copied, and `Field` zeroes it from

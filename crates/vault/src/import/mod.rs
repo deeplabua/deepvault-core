@@ -38,7 +38,14 @@ pub struct Imported {
     /// Items that could not be imported: a Bitwarden card or identity, a row with nothing but
     /// a title, an item in Secrets' trash.
     pub skipped: usize,
+    /// Files left out for being over `ATTACHMENT_MAX_BYTES`, by name (KeePass): the entry is
+    /// imported without them.
+    pub files_skipped: Vec<String>,
 }
+
+/// The largest file an entry takes: the whole vault is held in memory and written at every
+/// save. The app refuses bigger ones; an import leaves them out (`Imported::files_skipped`).
+pub const ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 /// The entries in an export: XML (Secrets) when it starts with `<`, CSV otherwise.
 /// `InvalidImport` when it is neither, or has nothing a password export has.

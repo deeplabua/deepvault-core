@@ -35,7 +35,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Imported> {
             None => skipped += 1,
         }
     }
-    Ok(Imported { format: columns.format, entries, skipped })
+    Ok(Imported { format: columns.format, entries, skipped, files_skipped: Vec::new() })
 }
 
 /// A cell: where its text is in the file, and whether it was quoted (then `""` is `"`).

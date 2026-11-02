@@ -166,6 +166,39 @@ fn an_export_comes_back_with_every_kind() {
     assert!(stripe.fields.iter().any(|f| f.name == field::SHELL && !f.custom));
 }
 
+/// A file over 10 MiB stays out of the import, named in `files_skipped`; the entry and its
+/// other files come in.
+#[test]
+fn a_file_over_ten_mib_is_left_out_and_named() {
+    let mut vault = Vault::create(b"pw", KdfParams::TEST_ONLY).unwrap();
+    let file = |name: &str, size: usize| {
+        let mut value = format!("{name}\0").into_bytes();
+        value.resize(value.len() + size, 7);
+        Field { name: "attachment".into(), value, concealed: true, custom: false }
+    };
+    vault.add_entry(NewEntry {
+        kind: EntryKind::Login,
+        title: "Scans".into(),
+        fields: vec![
+            file("big.iso", vault::import::ATTACHMENT_MAX_BYTES + 1),
+            file("edge.pdf", vault::import::ATTACHMENT_MAX_BYTES),
+            file("small.txt", 3),
+        ],
+    });
+    let password: &[u8] = b"export-pass";
+    let exported = vault.export_kdbx(&Key { password: Some(password), key_file: None }).unwrap();
+    let imported = kdbx::read(&exported, &Key { password: Some(password), key_file: None }).unwrap();
+    assert_eq!(imported.files_skipped, vec!["big.iso".to_string()]);
+    let scans = imported.entries.iter().find(|e| e.title == "Scans").unwrap();
+    let names: Vec<_> = scans
+        .fields
+        .iter()
+        .filter(|f| f.name == "attachment")
+        .map(|f| f.value.split(|&b| b == 0).next().unwrap().to_vec())
+        .collect();
+    assert_eq!(names, vec![b"edge.pdf".to_vec(), b"small.txt".to_vec()]);
+}
+
 /// Writes an export to `$KDBX_OUT` for another implementation to open (`make.py` checks it):
 /// `KDBX_OUT=/tmp/out.kdbx cargo test --test kdbx -- --ignored`.
 #[test]
