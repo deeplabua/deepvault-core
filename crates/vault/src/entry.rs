@@ -124,7 +124,7 @@ pub struct NewEntry {
 
 /// The encrypted payload of a block. A deleted entry stays as a tombstone (no title, no
 /// fields) so a merge can tell «deleted» from «never seen».
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Entry {
     #[zeroize(skip)]

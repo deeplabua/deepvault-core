@@ -35,6 +35,10 @@ pub enum VaultError {
     UnsupportedSshKey,
     /// A file over `file::FILE_MAX_BYTES` (2 GB), or one a v1 vault has no room for.
     FileTooLarge,
+    /// Another copy of this vault (`Vault::merge_file`) whose key slots, KDF or format version
+    /// differ from this one's while both changed them since they parted: a password changed on
+    /// both devices. Not merged; nothing changes.
+    Diverged,
 }
 
 impl fmt::Display for VaultError {
@@ -54,6 +58,7 @@ impl fmt::Display for VaultError {
             Self::EncryptedSshKey => f.write_str("the SSH key has a passphrase"),
             Self::UnsupportedSshKey => f.write_str("only ed25519 SSH keys are taken"),
             Self::FileTooLarge => f.write_str("the file is too large"),
+            Self::Diverged => f.write_str("the vault's password or format was changed on another device too"),
         }
     }
 }

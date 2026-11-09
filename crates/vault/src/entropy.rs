@@ -56,3 +56,19 @@ impl Entropy for ScriptedEntropy {
         self.now
     }
 }
+
+/// System randomness and a clock set by the test, for what depends on which change came last
+/// (`Vault::merge_file`). Never in the app.
+#[cfg(feature = "testing")]
+pub struct FixedClock(pub u64);
+
+#[cfg(feature = "testing")]
+impl Entropy for FixedClock {
+    fn fill(&mut self, buf: &mut [u8]) {
+        SystemEntropy.fill(buf)
+    }
+
+    fn now(&self) -> u64 {
+        self.0
+    }
+}

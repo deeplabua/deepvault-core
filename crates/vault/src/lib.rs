@@ -38,12 +38,12 @@ pub use format::{MAGIC, VERSION, VERSION_1};
 pub use kdf::KdfParams;
 pub use secret::{Key, SecretBytes};
 pub use totp::TotpCode;
-pub use vault::{AuditItem, MergeChoice, Merged, PasskeyInfo, Vault, WriteFile};
+pub use vault::{AuditItem, MergeChoice, MergeReport, Merged, PasskeyInfo, Vault, WriteFile};
 
 /// Deterministic pieces for test vectors. Behind the `testing` feature: never in the app.
 #[cfg(feature = "testing")]
 pub mod testing {
-    pub use crate::entropy::ScriptedEntropy;
+    pub use crate::entropy::{FixedClock, ScriptedEntropy};
 
     use crate::entry::{Entry, NewEntry};
 

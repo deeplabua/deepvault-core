@@ -124,6 +124,12 @@ impl Vault {
         })
     }
 
+    /// Randomness and time from `entropy` from now on: a vault opened in a test, at a set time.
+    #[cfg(feature = "testing")]
+    pub fn set_entropy(&mut self, entropy: Box<dyn Entropy>) {
+        self.entropy = entropy;
+    }
+
     /// Opens a vault file with the master password: tries every password slot with the key
     /// derived from the header's KDF parameters.
     pub fn open(file: &[u8], password: &[u8]) -> Result<Self> {
@@ -167,23 +173,12 @@ impl Vault {
             return Err(VaultError::Corrupted);
         }
 
-        let mut index = Vec::new();
-        let mut trash = Vec::new();
         for (position, block) in raw.blocks.iter().enumerate() {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&keys, raw.version, &raw.header.vault_id, block)?;
-            if entry.deleted {
-                continue;
-            }
-            let summary = EntrySummary::new(block.entry_id, &entry);
-            if entry.trashed_at == 0 {
-                index.push(summary)
-            } else {
-                trash.push(summary)
-            }
         }
+        let (index, trash) = index_blocks(&keys, raw.version, &raw.header.vault_id, &raw.blocks)?;
         Ok(Self {
             version: raw.version,
             header: raw.header,
@@ -202,6 +197,115 @@ impl Vault {
     /// now: only the entries go back — and the format version, so a move to v2 whose files could
     /// not be written goes back to the v1 bytes saved before it.
     pub fn revert_to(&mut self, file: &[u8]) -> Result<()> {
+        let (version, _, blocks) = self.own_copy(file)?;
+        let (index, trash) = index_blocks(&self.keys, version, &self.header.vault_id, &blocks)?;
+        self.version = version;
+        self.blocks = blocks;
+        self.index = index;
+        self.trash = trash;
+        Ok(())
+    }
+
+    /// Takes in another copy of this vault — the file as another device wrote it (iCloud Drive),
+    /// or a conflict version the sync kept — entry by entry (ADR-0016). `base` is the file as
+    /// this vault was last read or written, when the caller kept it: an entry changed only on one
+    /// side since then takes that side; one changed on both (or with no base) takes the version
+    /// changed last (`updated_at`), and the other version's password and one-time code go to its
+    /// history (`field::PREVIOUS`) — nothing is lost. An entry deleted for good on one side and
+    /// changed on the other goes to Recently Deleted instead. Entries only one side has are
+    /// kept. The header (key slots, KDF) takes the side that changed it; changed on both:
+    /// `Diverged`, and nothing changes. Another vault or a damaged copy: `Corrupted`. All or
+    /// nothing. The caller saves when `outgoing` is not 0. Randomness: a nonce (24) per entry
+    /// sealed anew.
+    pub fn merge_file(&mut self, theirs: &[u8], base: Option<&[u8]>) -> Result<MergeReport> {
+        let (version, their_header, their_blocks) = self.own_copy(theirs)?;
+        // A base that is not a copy of this vault (damaged) is no help: merged as with none.
+        let base = base.and_then(|base| self.own_copy(base).ok());
+        if version != self.version {
+            return Err(VaultError::Diverged);
+        }
+        let mut report = MergeReport::default();
+        let ours_header = format::to_cbor(&self.header);
+        let theirs_header = format::to_cbor(&their_header);
+        let mut new_header = None;
+        if ours_header != theirs_header {
+            match base.as_ref().map(|(_, header, _)| format::to_cbor(header)) {
+                Some(base) if base == ours_header => new_header = Some(their_header),
+                Some(base) if base == theirs_header => report.outgoing += 1,
+                _ => return Err(VaultError::Diverged),
+            }
+        }
+        let base_blocks: &[Block] = base.as_ref().map_or(&[], |(_, _, blocks)| blocks);
+        let find = |blocks: &[Block], id: &[u8; ENTRY_ID_LEN]| -> Option<usize> {
+            blocks.iter().position(|block| &block.entry_id == id)
+        };
+
+        let mut blocks = self.blocks.clone();
+        for block in blocks.iter_mut() {
+            let id = block.entry_id;
+            let Some(theirs) = find(&their_blocks, &id).map(|at| &their_blocks[at]) else {
+                report.outgoing += 1;
+                continue;
+            };
+            if same_block(block, theirs) {
+                continue;
+            }
+            let ours_entry = decrypt(&self.keys, self.version, &self.header.vault_id, block)?;
+            let theirs_entry = decrypt(&self.keys, self.version, &self.header.vault_id, theirs)?;
+            if ours_entry.to_cbor() == theirs_entry.to_cbor() {
+                continue;
+            }
+            let base = find(base_blocks, &id).map(|at| &base_blocks[at]);
+            let ours_unchanged = base.is_some_and(|base| same_block(base, block));
+            let theirs_unchanged = base.is_some_and(|base| same_block(base, theirs));
+            let merged = if ours_unchanged {
+                theirs_entry.clone()
+            } else if theirs_unchanged {
+                ours_entry.clone()
+            } else {
+                let base = base
+                    .map(|base| decrypt(&self.keys, self.version, &self.header.vault_id, base))
+                    .transpose()?;
+                resolve(&ours_entry, &theirs_entry, base.as_ref())
+            };
+            report.count(Some(&ours_entry), &merged);
+            let merged_cbor = merged.to_cbor();
+            if merged_cbor == theirs_entry.to_cbor() {
+                *block = theirs.clone();
+            } else {
+                report.outgoing += 1;
+                if merged_cbor != ours_entry.to_cbor() {
+                    *block = self.seal(id, &merged);
+                }
+            }
+        }
+        for theirs in &their_blocks {
+            if find(&blocks, &theirs.entry_id).is_some() {
+                continue;
+            }
+            // Here before and taken out since (`revert_to`, an undone import): it stays out
+            // unless the other side changed it.
+            if find(base_blocks, &theirs.entry_id).is_some_and(|at| same_block(&base_blocks[at], theirs)) {
+                continue;
+            }
+            let entry = decrypt(&self.keys, self.version, &self.header.vault_id, theirs)?;
+            report.count(None, &entry);
+            blocks.push(theirs.clone());
+        }
+
+        let (index, trash) = index_blocks(&self.keys, self.version, &self.header.vault_id, &blocks)?;
+        if let Some(header) = new_header {
+            self.header = header;
+        }
+        self.blocks = blocks;
+        self.index = index;
+        self.trash = trash;
+        Ok(report)
+    }
+
+    /// A copy of this vault's file, checked: its id, its MACs under this vault's keys, one block
+    /// per entry. `Corrupted` for another vault or a damaged copy.
+    fn own_copy(&self, file: &[u8]) -> Result<(u16, Header, Vec<Block>)> {
         let raw = format::parse(file)?;
         if raw.header.vault_id != self.header.vault_id
             || !keys::verify_mac(&self.keys.header_mac, raw.header_region, raw.header_mac)
@@ -209,28 +313,12 @@ impl Vault {
         {
             return Err(VaultError::Corrupted);
         }
-        let mut index = Vec::new();
-        let mut trash = Vec::new();
         for (position, block) in raw.blocks.iter().enumerate() {
             if raw.blocks[..position].iter().any(|earlier| earlier.entry_id == block.entry_id) {
                 return Err(VaultError::Corrupted);
             }
-            let entry = decrypt(&self.keys, raw.version, &self.header.vault_id, block)?;
-            if entry.deleted {
-                continue;
-            }
-            let summary = EntrySummary::new(block.entry_id, &entry);
-            if entry.trashed_at == 0 {
-                index.push(summary)
-            } else {
-                trash.push(summary)
-            }
         }
-        self.version = raw.version;
-        self.blocks = raw.blocks;
-        self.index = index;
-        self.trash = trash;
-        Ok(())
+        Ok((raw.version, raw.header, raw.blocks))
     }
 
     /// The whole file, ready to be written atomically by the caller.
@@ -1150,6 +1238,42 @@ pub struct Merged {
     pub tagged: usize,
 }
 
+/// What `Vault::merge_file` did, for a line such as «Updated from Mac — 3 new · 1 changed»:
+/// counts only, never a title or a value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MergeReport {
+    /// Entries live now that were not: new on the other side, or restored there.
+    pub added: usize,
+    /// Live entries whose content is now the other side's, or both sides' merged.
+    pub changed: usize,
+    /// Entries live before that are now in Recently Deleted or deleted for good.
+    pub removed: usize,
+    /// Entries (and the header) the other copy does not have as they are now: write the merged
+    /// vault so that it gets them. 0: the other copy already is the merge.
+    pub outgoing: usize,
+}
+
+impl MergeReport {
+    /// Whether anything shown changed.
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.changed == 0 && self.removed == 0
+    }
+
+    fn count(&mut self, before: Option<&Entry>, after: &Entry) {
+        let live = |entry: &Entry| !entry.deleted && entry.trashed_at == 0;
+        match (before.is_some_and(live), live(after)) {
+            (false, true) => self.added += 1,
+            (true, false) => self.removed += 1,
+            (true, true) => {
+                if !same_content(before.expect("live"), after) {
+                    self.changed += 1;
+                }
+            }
+            (false, false) => {}
+        }
+    }
+}
+
 /// An entry as an import would bring it, for telling whether the vault has it: its kind,
 /// title and fields sorted, without tags, the picture and links; a site without its scheme
 /// and trailing slash (`gmail.com` is saved as `https://gmail.com`). Zeroed on drop.
@@ -1186,6 +1310,169 @@ impl Comparable {
 /// A block that does not authenticate is damaged; one that does but is no entry this core
 /// reads was written, with this vault's key, by a newer DeepVault (a field added since): only
 /// that writer could have made it, and an older one must not rewrite what it cannot read.
+/// The live entries and those in Recently Deleted of `blocks`, in block order; tombstones left out.
+fn index_blocks(
+    keys: &Subkeys,
+    version: u16,
+    vault_id: &[u8; VAULT_ID_LEN],
+    blocks: &[Block],
+) -> Result<(Vec<EntrySummary>, Vec<EntrySummary>)> {
+    let mut index = Vec::new();
+    let mut trash = Vec::new();
+    for block in blocks {
+        let entry = decrypt(keys, version, vault_id, block)?;
+        if entry.deleted {
+            continue;
+        }
+        let summary = EntrySummary::new(block.entry_id, &entry);
+        if entry.trashed_at == 0 {
+            index.push(summary)
+        } else {
+            trash.push(summary)
+        }
+    }
+    Ok((index, trash))
+}
+
+/// The same kind, title and fields, in order: what the entry says, not its state.
+fn same_content(a: &Entry, b: &Entry) -> bool {
+    a.kind == b.kind
+        && a.title == b.title
+        && a.fields.len() == b.fields.len()
+        && a.fields.iter().zip(&b.fields).all(|(x, y)| {
+            x.name == y.name && x.value == y.value && x.concealed == y.concealed && x.custom == y.custom
+        })
+}
+
+/// The same sealed bytes: the entry was not sealed again since (every change takes a new nonce).
+fn same_block(a: &Block, b: &Block) -> bool {
+    a.nonce == b.nonce && a.ciphertext == b.ciphertext
+}
+
+/// One entry changed on both sides (ADR-0016). The version changed last wins — at the same
+/// second, a live one over a tombstone, then the greater CBOR, so both devices pick the same.
+/// The other one's password and one-time code go to the winner's history. A tombstone winning
+/// over an entry that was changed and not deleted there sends that entry to Recently Deleted:
+/// deleted for good only where it was seen deleted. Used when either side last was; starred as
+/// the side that changed the star since `base` has it (a star does not change `updated_at`).
+fn resolve(a: &Entry, b: &Entry, base: Option<&Entry>) -> Entry {
+    // Only one side changed what the entry says; the other only its state (a star, Recently
+    // Deleted, a use): the content of the one, the state merged — at any second.
+    if let Some(base) = base.filter(|base| !base.deleted && !a.deleted && !b.deleted) {
+        let (a_edited, b_edited) = (!same_content(a, base), !same_content(b, base));
+        if a_edited != b_edited {
+            let (editor, other) = if a_edited { (a, b) } else { (b, a) };
+            let mut merged = editor.clone();
+            merged.used_at = a.used_at.max(b.used_at);
+            merged.favorite = if a.favorite != base.favorite { a.favorite } else { b.favorite };
+            // Moved to or out of Recently Deleted on the other side after the edit: as it says.
+            if other.trashed_at != base.trashed_at && other.updated_at >= editor.updated_at {
+                merged.trashed_at = other.trashed_at;
+            }
+            merged.updated_at = a.updated_at.max(b.updated_at);
+            return merged;
+        }
+    }
+    let key = |entry: &Entry| (entry.updated_at, !entry.deleted);
+    let a_wins = match key(a).cmp(&key(b)) {
+        std::cmp::Ordering::Equal => a.to_cbor()[..] >= b.to_cbor()[..],
+        order => order.is_gt(),
+    };
+    let (winner, loser) = if a_wins { (a, b) } else { (b, a) };
+    if winner.deleted {
+        if loser.deleted || loser.field(field::UNSAVED).is_some() {
+            return winner.clone();
+        }
+        let mut rescued = loser.clone();
+        rescued.trashed_at = winner.updated_at.max(1);
+        rescued.updated_at = winner.updated_at;
+        return rescued;
+    }
+    let mut merged = winner.clone();
+    merged.used_at = a.used_at.max(b.used_at);
+    // A star is no change (`updated_at` stays): the side that starred or unstarred it since the
+    // base says; both did — the same.
+    if let Some(base) = base.filter(|base| !base.deleted && !a.deleted && !b.deleted) {
+        merged.favorite = if a.favorite != base.favorite { a.favorite } else { b.favorite };
+    }
+    if !loser.deleted {
+        merge_history(&mut merged.fields, loser, winner.updated_at);
+    }
+    merged
+}
+
+/// `name` and value of a `previous` field (`<name>\n<seconds>\n<value>`), with its time.
+fn previous_parts(field: &Field) -> Option<(&[u8], u64, &[u8])> {
+    if field.custom || field.name != field::PREVIOUS {
+        return None;
+    }
+    let mut parts = field.value.splitn(3, |byte| *byte == b'\n');
+    let name = parts.next()?;
+    let time = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
+    Some((name, time, parts.next()?))
+}
+
+/// Adds to `fields` (the winner's) the loser's password and one-time code — when they differ
+/// from the winner's and its history has them not — as values replaced at `replaced_at` (the
+/// winner's change, so the newest in its history and not the first cut),
+/// and the values of the loser's history the winner's lacks. Then the history is ordered by time and cut to
+/// `HISTORY_LEN` of each field, as `keep_history` keeps it. Nothing added: `fields` stay as
+/// they are.
+fn merge_history(fields: &mut Vec<Field>, loser: &Entry, replaced_at: u64) {
+    let mut added = false;
+    for name in field::KEPT_HISTORY {
+        let Some(value) = loser.field(name).map(|f| &f.value).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let current = fields.iter().find(|f| !f.custom && f.name == name).map(|f| &f.value);
+        let known = current == Some(value)
+            || fields
+                .iter()
+                .filter_map(previous_parts)
+                .any(|(of, _, old)| of == name.as_bytes() && old == &value[..]);
+        if known {
+            continue;
+        }
+        let mut previous = format!("{name}\n{replaced_at}\n").into_bytes();
+        previous.extend_from_slice(value);
+        fields.push(Field { name: field::PREVIOUS.into(), value: previous, concealed: true, custom: false });
+        added = true;
+    }
+    for old in loser.fields.iter() {
+        let Some((name, _, value)) = previous_parts(old) else { continue };
+        if !fields.iter().filter_map(previous_parts).any(|(of, _, known)| of == name && known == value) {
+            fields.push(old.clone());
+            added = true;
+        }
+    }
+    if !added {
+        return;
+    }
+    let mut history = Vec::new();
+    let mut position = 0;
+    while position < fields.len() {
+        if previous_parts(&fields[position]).is_some() {
+            history.push(fields.remove(position));
+        } else {
+            position += 1;
+        }
+    }
+    let order = |f: &Field| previous_parts(f).map(|(_, time, _)| time).unwrap_or(0);
+    history.sort_by(|x, y| (order(x), &x.value).cmp(&(order(y), &y.value)));
+    for name in field::KEPT_HISTORY {
+        let of_name = |f: &Field| previous_parts(f).is_some_and(|(of, _, _)| of == name.as_bytes());
+        let mut extra = history.iter().filter(|f| of_name(f)).count().saturating_sub(field::HISTORY_LEN);
+        history.retain(|f| {
+            if extra > 0 && of_name(f) {
+                extra -= 1;
+                return false;
+            }
+            true
+        });
+    }
+    fields.extend(history);
+}
+
 fn decrypt(keys: &Subkeys, version: u16, vault_id: &[u8; VAULT_ID_LEN], block: &Block) -> Result<Entry> {
     let aad = keys::aad_for(version, "entry", vault_id, &block.entry_id);
     let plaintext =
