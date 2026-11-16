@@ -54,7 +54,7 @@ in memory while unlocked holds only visible values: title, first site and user n
 picture, whether there is a one-time code. Concealed values are decrypted one field at a time.
 
 Imports (`crates/vault/src/import/`): CSV exports of 1Password, Bitwarden, Apple Passwords,
-Chrome and Firefox, and the XML export of Secrets, parsed by hand (no dependency) straight into
+Chrome, Firefox and Zoho Vault, and the XML export of Secrets, parsed by hand (no dependency) straight into
 zeroed-on-drop fields.
 
 One-time codes (RFC 6238, `crates/vault/src/totp.rs`) are computed in the core from an

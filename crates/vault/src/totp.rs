@@ -44,7 +44,10 @@ pub fn parse(text: &[u8]) -> Result<(Zeroizing<Vec<u8>>, TotpParams)> {
     let Some(rest) = strip_prefix_ignore_case(text, "otpauth://") else {
         return Ok((base32(text)?, TotpParams::default()));
     };
-    if !rest.get(..5).is_some_and(|kind| kind.eq_ignore_ascii_case("totp/")) {
+    // `totp/label?…`, or `totp?…` without a label (Zoho Vault's export writes it so).
+    let kind_ok = rest.get(..4).is_some_and(|kind| kind.eq_ignore_ascii_case("totp"))
+        && matches!(rest.as_bytes().get(4), Some(b'/' | b'?'));
+    if !kind_ok {
         // HOTP needs a counter written back on every use: not supported.
         return Err(VaultError::InvalidOtp);
     }
@@ -186,6 +189,16 @@ mod tests {
         assert_eq!(at.code, "287082");
         assert_eq!((at.period, at.remaining), (30, 1));
         assert_eq!(code(bare, 60).unwrap().remaining, 30);
+    }
+
+    #[test]
+    fn a_uri_without_a_label_is_read() {
+        let (secret, _) = parse(b"otpauth://totp?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&period=30").unwrap();
+        assert_eq!(secret.as_slice(), b"12345678901234567890");
+        assert_eq!(
+            parse(b"otpauth://totpx?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").err(),
+            Some(VaultError::InvalidOtp)
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Another password manager's export as new entries (PRD 02, «Импорт»): CSV from 1Password,
-//! Bitwarden, Apple Passwords, Chrome, Firefox (or any file with recognisable column names),
+//! Bitwarden, Apple Passwords, Chrome, Firefox, Zoho Vault (or any file with recognisable column names),
 //! and the XML of Secrets.
 //!
 //! An export is plain text with every password in it. It is read here, in the core, so the
@@ -24,6 +24,9 @@ pub enum Format {
     Apple,
     Chrome,
     Firefox,
+    /// Zoho Vault: `Password Name`, `Password URL`, the login in `SecretData` or in unnamed
+    /// cells past the header.
+    Zoho,
     Secrets,
     /// A KeePass KDBX file (`kdbx::read`, ADR-0008).
     KeePass,

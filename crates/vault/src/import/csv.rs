@@ -1,4 +1,4 @@
-//! CSV exports: 1Password, Bitwarden, Apple Passwords, Chrome, Firefox, or any file with
+//! CSV exports: 1Password, Bitwarden, Apple Passwords, Chrome, Firefox, Zoho Vault, or any file with
 //! recognisable column names. Cells are copied out once into buffers of their exact size (no
 //! growing, no stray copies).
 //!
@@ -30,7 +30,20 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Imported> {
         if row.iter().all(|cell| cell.is_empty()) {
             continue;
         }
-        match columns.entry(&cell) {
+        // Zoho Vault's other export: the login in cells past the header, without names — the
+        // user name, then the password.
+        let mut extras = Vec::new();
+        if columns.format == Format::Zoho {
+            for (index, c) in row.iter().skip(header.len()).enumerate() {
+                let label = match index {
+                    0 => "Username".to_string(),
+                    1 => "Password".to_string(),
+                    n => format!("Field {}", n - 1),
+                };
+                extras.push((label, c.text(bytes)));
+            }
+        }
+        match columns.entry(&cell, extras) {
             Some(entry) => entries.push(entry),
             None => skipped += 1,
         }
@@ -131,6 +144,22 @@ struct Columns {
     kind: Option<usize>,
     /// Bitwarden's custom fields: `name: value` lines.
     fields: Option<usize>,
+    /// Zoho Vault's `SecretData` and `CustomData`: `name:value` lines, the login among them.
+    secret_data: Vec<usize>,
+    /// Zoho Vault's description of a secret.
+    description: Option<usize>,
+}
+
+/// A field name that is the login's user name or password (Zoho Vault's own names for them).
+fn is_username(name: &str) -> bool {
+    matches!(
+        name.trim().to_lowercase().as_str(),
+        "username" | "user name" | "login" | "email" | "e-mail" | "user"
+    )
+}
+
+fn is_password(name: &str) -> bool {
+    matches!(name.trim().to_lowercase().as_str(), "password" | "pass word" | "passphrase")
 }
 
 impl Columns {
@@ -141,7 +170,9 @@ impl Columns {
         };
         let has = |name: &str| names.iter().any(|n| n == name);
         let columns = Self {
-            format: if has("login_password") {
+            format: if has("password name") || has("secret name") {
+                Format::Zoho
+            } else if has("login_password") {
                 Format::Bitwarden
             } else if has("otpauth") && has("favorite") && has("archived") {
                 Format::OnePassword
@@ -154,23 +185,30 @@ impl Columns {
             } else {
                 Format::Other
             },
-            title: column(&["title", "name"]),
-            url: column(&["url", "login_uri", "website", "web site", "uri"]),
+            title: column(&["title", "name", "password name", "secret name"]),
+            url: column(&["url", "login_uri", "website", "web site", "uri", "password url", "secret url"]),
             username: column(&["username", "login_username", "user name", "login", "email"]),
             password: column(&["password", "login_password"]),
             otp: column(&["otpauth", "login_totp", "totp", "otp"]),
             notes: column(&["notes", "note", "extra", "comments"]),
             tags: column(&["tags"]),
-            folder: column(&["folder", "grouping"]),
+            folder: column(&["folder", "grouping", "folder name"]),
             kind: column(&["type"]),
             fields: column(&["fields"]),
+            secret_data: ["secretdata", "customdata"].iter().filter_map(|n| column(&[n])).collect(),
+            description: column(&["description"]),
         };
         // A password export has at least a password or a site column.
         (columns.password.is_some() || columns.url.is_some()).then_some(columns)
     }
 
     /// One row as an entry, in the order the app saves a login; `None` to skip it.
-    fn entry(&self, cell: &dyn Fn(Option<usize>) -> Zeroizing<Vec<u8>>) -> Option<NewEntry> {
+    /// `extras`: Zoho Vault's unnamed cells past the header, with the names a row gave them.
+    fn entry(
+        &self,
+        cell: &dyn Fn(Option<usize>) -> Zeroizing<Vec<u8>>,
+        mut extras: Vec<(String, Zeroizing<Vec<u8>>)>,
+    ) -> Option<NewEntry> {
         let kind = match cell(self.kind).as_slice() {
             b"" | b"login" => EntryKind::Login,
             b"note" => EntryKind::Note,
@@ -192,9 +230,34 @@ impl Columns {
         };
 
         let urls = cell(self.url);
-        let username = cell(self.username);
+        for column in &self.secret_data {
+            for line in cell(Some(*column)).split(|byte| *byte == b'\n') {
+                let line = trimmed(line);
+                if let Some(colon) = line.iter().position(|byte| *byte == b':') {
+                    let name = String::from_utf8_lossy(&trimmed(&line[..colon])).into_owned();
+                    if name != "SecretType" {
+                        extras.push((name, Zeroizing::new(line[colon + 1..].to_vec())));
+                    }
+                }
+            }
+        }
+        let mut username = cell(self.username);
+        let mut password = cell(self.password);
+        let mut rest = Vec::new();
+        for (name, value) in extras {
+            if trimmed(&value).is_empty() {
+                continue;
+            }
+            if is_username(&name) && trimmed(&username).is_empty() {
+                username = value;
+            } else if is_password(&name) && trimmed(&password).is_empty() {
+                password = value;
+            } else {
+                rest.push((name, value));
+            }
+        }
         add(field::USERNAME, username.clone(), false, false);
-        add(field::PASSWORD, cell(self.password), true, false);
+        add(field::PASSWORD, password, true, false);
         let otp = cell(self.otp);
         let valid_otp = totp::parse(trimmed(&otp).as_slice()).is_ok();
         add(if valid_otp { field::TOTP } else { "OTP" }, otp, true, !valid_otp);
@@ -203,6 +266,10 @@ impl Columns {
             add(field::URL, Zeroizing::new(url.to_vec()), false, false);
         }
         add(field::NOTES, cell(self.notes), true, false);
+        add("Description", cell(self.description), false, true);
+        for (name, value) in rest {
+            add(&name, value, true, true);
+        }
         for line in cell(self.fields).split(|byte| *byte == b'\n') {
             let line = trimmed(line);
             if let Some(colon) = line.iter().position(|byte| *byte == b':') {

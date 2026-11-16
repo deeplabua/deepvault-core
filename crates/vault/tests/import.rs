@@ -297,3 +297,89 @@ fn an_import_label_tags_only_what_is_new() {
         .collect();
     assert_eq!(tagged, ["GitLab"]);
 }
+
+/// Zoho Vault, the export with the login in unnamed cells past the header: the user name, then
+/// the password. `Title,http://Url,…,Username,Password` is Zoho's sample entry, kept as one.
+#[test]
+fn zoho_vault_unnamed_cells() {
+    let csv = "\"Password Name\",\"Password URL\",\"TOTP\",\"Notes\",\"Folder Name\",\"Description\",\"Tags\",\"Classification\",\"Favorite\"\n\
+         Title,\"http://Url\",\"\",\"\",,,\"\",E,0,\"Username\",\"Password\"\n\
+         Shop,\"https://shop.example.com/login\",\"\",\"\",Personal,,\"\",E,0,\"alice@example.com\",\"pa,ss\"\n\
+         Forum,\"https://forum.example.org\",\"\",\"\",,,\"\",E,0,\"\",\"only-a-password\"\n";
+    let imported = import(csv);
+    assert_eq!(imported.format, Format::Zoho);
+    assert_eq!(imported.skipped, 0);
+    let [sample, shop, forum] = &imported.entries[..] else { panic!("three entries") };
+    assert_eq!(sample.title, "Title");
+    assert_eq!(shop.title, "Shop");
+    assert_eq!(
+        fields(shop),
+        vec![
+            known(field::USERNAME, "alice@example.com", false),
+            known(field::PASSWORD, "pa,ss", true),
+            known(field::URL, "https://shop.example.com/login", false),
+            known(field::TAG, "Personal", false),
+        ]
+    );
+    assert_eq!(
+        fields(forum),
+        vec![
+            known(field::PASSWORD, "only-a-password", true),
+            known(field::URL, "https://forum.example.org", false)
+        ]
+    );
+}
+
+/// Zoho Vault, the export with `SecretData` lines (what Bitwarden reads).
+#[test]
+fn zoho_vault_secret_data() {
+    let csv = format!(
+        "Password Name,Password URL,Description,Notes,Tags,Favorite,TOTP,SecretData,CustomData,Folder Name\n\
+         Mail,https://mail.example.com,Work mail,,\"work,mail\",1,{SECRET},\"SecretType:Web Account\nUser Name:bob\nPassword:s3cret\",\"Recovery:abc-123\",\n"
+    );
+    let imported = import(&csv);
+    assert_eq!(imported.format, Format::Zoho);
+    assert_eq!(
+        fields(&imported.entries[0]),
+        vec![
+            known(field::USERNAME, "bob", false),
+            known(field::PASSWORD, "s3cret", true),
+            known(field::TOTP, SECRET, true),
+            known(field::URL, "https://mail.example.com", false),
+            ("Description".into(), "Work mail".into(), false, true),
+            ("Recovery".into(), "abc-123".into(), true, true),
+            known(field::TAG, "work", false),
+            known(field::TAG, "mail", false),
+        ]
+    );
+}
+
+/// Zoho Vault, the columns in the order its «Export All» writes them.
+#[test]
+fn zoho_vault_export_all() {
+    let csv = format!(
+        "\"Password Name\",\"Description\",\"Password URL\",\"SecretData\",\"Notes\",\"CustomData\",\"Tags\",\"Classification\",\"Favorite\",\"TOTP\",\"Folder Name\"\n\
+         Shop,,https://shop.example.com/login,\"SecretType:Web Account\nUser Name:\nPassword:only-a-password\n\",,\"\",,E,0,,\n\
+         Mail,,https://mail.example.com,\"SecretType:Web Account\nUser Name:bob@example.com\nPassword:s3cret\n\",,\"\",,E,0,otpauth://totp?secret={SECRET}&period=30,Work\n"
+    );
+    let imported = import(&csv);
+    assert_eq!(imported.format, Format::Zoho);
+    let [shop, mail] = &imported.entries[..] else { panic!("two entries") };
+    assert_eq!(
+        fields(shop),
+        vec![
+            known(field::PASSWORD, "only-a-password", true),
+            known(field::URL, "https://shop.example.com/login", false)
+        ]
+    );
+    assert_eq!(
+        fields(mail),
+        vec![
+            known(field::USERNAME, "bob@example.com", false),
+            known(field::PASSWORD, "s3cret", true),
+            known(field::TOTP, &format!("otpauth://totp?secret={SECRET}&period=30"), true),
+            known(field::URL, "https://mail.example.com", false),
+            known(field::TAG, "Work", false),
+        ]
+    );
+}
